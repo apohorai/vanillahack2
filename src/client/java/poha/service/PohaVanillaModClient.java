@@ -14,7 +14,6 @@ import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
@@ -123,16 +122,15 @@ public class PohaVanillaModClient implements ClientModInitializer {
 		});
 	}
 
+	// Hotbar is 0-indexed internally; slot 6 as a player counts it (1-9) is
+	// index 5.
+	private static final int SOURCE_HOTBAR_SLOT = 5;
+
 	private void beginOffsetPlacement(LocalPlayer player, KeyMapping sneakKey) {
 		if (placeCountdown >= 0 || mining) return; // already mid-sequence
 
 		Level level = player.level();
 		BlockPos origin = player.blockPosition();
-
-		// Print current coordinates.
-		player.sendSystemMessage(
-				Component.literal("Current pos: " + origin.getX() + ", " + origin.getY() + ", " + origin.getZ())
-		);
 
 		// Facing direction, and "left" relative to that facing.
 		Direction facing = player.getDirection();
@@ -140,18 +138,12 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
 		BlockPos target = origin.relative(facing, 1).relative(left, 2);
 
-		// Do we actually have redstone ore? No auto-give here — if it's
-		// missing, say so and stop.
-		int hotbarSlot = -1;
-		for (int i = 0; i < 9; i++) {
-			ItemStack stack = player.getInventory().getItem(i);
-			if (stack.is(Items.REDSTONE_ORE)) {
-				hotbarSlot = i;
-				break;
-			}
-		}
-		if (hotbarSlot == -1) {
-			player.sendSystemMessage(Component.literal("You don't have any redstone ore."));
+		// Whatever's in hotbar slot 6 — no auto-give here, if it's empty or
+		// not a placeable block, say so and stop.
+		int hotbarSlot = SOURCE_HOTBAR_SLOT;
+		ItemStack slotStack = player.getInventory().getItem(hotbarSlot);
+		if (slotStack.isEmpty() || !(slotStack.getItem() instanceof net.minecraft.world.item.BlockItem)) {
+			player.sendSystemMessage(Component.literal("Hotbar slot 6 doesn't have a placeable block in it."));
 			looping = false;
 			return;
 		}
