@@ -45,7 +45,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
 	// sneak for a longer window before clicking (mirroring what a person does
 	// by hand — sneak, pause, then click) makes it reliable. ~10 ticks (half
 	// a second) is a comfortable margin.
-	private static final int SNEAK_WARMUP_TICKS = 1;
+	private static final int SNEAK_WARMUP_TICKS = 10;
 
 	private int placeCountdown = -1;
 	private BlockPos pendingClickPos;
@@ -53,6 +53,18 @@ public class PohaVanillaModClient implements ClientModInitializer {
 	private int pendingHotbarSlot;
 	private int pendingPreviousSlot;
 	private boolean pendingWasSneaking;
+
+	// Auto-mine-after-place state. Note this drives the same
+	// start/continue/stopDestroyBlock loop vanilla runs while you hold left
+	// click — it does not skip or shorten the real mining time for the
+	// block/tool combination, it just automates holding the button down.
+	private BlockPos miningPos;
+	private int miningPreviousSlot;
+	private boolean mining = false;
+
+	// H toggles this on/off. While true, a new place-then-break cycle is
+	// kicked off automatically as soon as the previous one finishes.
+	private boolean looping = false;
 
 	@Override
 	public void onInitializeClient() {
@@ -95,14 +107,24 @@ public class PohaVanillaModClient implements ClientModInitializer {
 				placeCountdown = -1;
 			}
 
+			if (mining) {
+				tickMining(client.player);
+			}
+
 			while (placeKey.consumeClick()) {
-				beginOffsetPlacement(client.player, client.options.keyShift);
+				looping = !looping;
+				if (looping) {
+					client.player.sendSystemMessage(Component.literal("Loop started. Press H again to stop."));
+					beginOffsetPlacement(client.player, client.options.keyShift);
+				} else {
+					client.player.sendSystemMessage(Component.literal("Loop stopping after this cycle."));
+				}
 			}
 		});
 	}
 
 	private void beginOffsetPlacement(LocalPlayer player, KeyMapping sneakKey) {
-		if (placeCountdown >= 0) return; // already mid-sequence
+		if (placeCountdown >= 0 || mining) return; // already mid-sequence
 
 		Level level = player.level();
 		BlockPos origin = player.blockPosition();
@@ -118,23 +140,25 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
 		BlockPos target = origin.relative(facing, 1).relative(left, 2);
 
-		// Do we actually have prismarine? No auto-give here — if it's missing,
-		// say so and stop.
+		// Do we actually have redstone ore? No auto-give here — if it's
+		// missing, say so and stop.
 		int hotbarSlot = -1;
 		for (int i = 0; i < 9; i++) {
 			ItemStack stack = player.getInventory().getItem(i);
-			if (stack.is(Items.PRISMARINE)) {
+			if (stack.is(Items.REDSTONE_ORE)) {
 				hotbarSlot = i;
 				break;
 			}
 		}
 		if (hotbarSlot == -1) {
-			player.sendSystemMessage(Component.literal("You don't have any prismarine."));
+			player.sendSystemMessage(Component.literal("You don't have any redstone ore."));
+			looping = false;
 			return;
 		}
 
 		if (!level.getBlockState(target).canBeReplaced()) {
 			player.sendSystemMessage(Component.literal("Target position " + target + " is already occupied."));
+			looping = false;
 			return;
 		}
 
@@ -146,6 +170,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
 		if (!level.getBlockState(below).is(net.minecraft.world.level.block.Blocks.HOPPER)) {
 			player.sendSystemMessage(
 					Component.literal("No hopper at " + below + " (below the target position) to place on."));
+			looping = false;
 			return;
 		}
 
@@ -173,6 +198,58 @@ public class PohaVanillaModClient implements ClientModInitializer {
 		net.minecraft.client.Minecraft.getInstance().gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
 
 		sneakKey.setDown(pendingWasSneaking);
-		player.getInventory().setSelectedSlot(pendingPreviousSlot);
+
+		// Immediately start mining the block we just placed, with a pickaxe
+		// from the hotbar if we have one.
+		BlockPos placedPos = pendingClickPos.relative(pendingClickFace);
+		// PickaxeItem no longer exists as of the tool-component rewrite
+		// (1.21.5+): tools are now data-driven, so check directly whether the
+		// stack is a correct tool for the specific block we just placed.
+		Level level = player.level();
+		int pickaxeSlot = -1;
+		for (int i = 0; i < 9; i++) {
+			ItemStack stack = player.getInventory().getItem(i);
+			if (!stack.isEmpty() && stack.isCorrectToolForDrops(level.getBlockState(placedPos))) {
+				pickaxeSlot = i;
+				break;
+			}
+		}
+
+		if (pickaxeSlot == -1) {
+			player.sendSystemMessage(Component.literal("Placed it, but you don't have a pickaxe to break it with."));
+			player.getInventory().setSelectedSlot(pendingPreviousSlot);
+			looping = false;
+			return;
+		}
+
+		miningPos = placedPos;
+		miningPreviousSlot = pendingPreviousSlot;
+		player.getInventory().setSelectedSlot(pickaxeSlot);
+		net.minecraft.client.Minecraft.getInstance().gameMode.startDestroyBlock(miningPos, Direction.UP);
+		mining = true;
+	}
+
+	private void tickMining(LocalPlayer player) {
+		Level level = player.level();
+
+		if (level.getBlockState(miningPos).isAir()) {
+			// Done — the block broke since the last tick.
+			net.minecraft.client.Minecraft.getInstance().gameMode.stopDestroyBlock();
+			player.getInventory().setSelectedSlot(miningPreviousSlot);
+			mining = false;
+
+			if (looping) {
+				beginOffsetPlacement(player, net.minecraft.client.Minecraft.getInstance().options.keyShift);
+			}
+			return;
+		}
+
+		boolean stillOnTarget = net.minecraft.client.Minecraft.getInstance().gameMode
+				.continueDestroyBlock(miningPos, Direction.UP);
+		if (!stillOnTarget) {
+			// Target/tool changed underneath us for some reason; restart the
+			// break rather than leaving it stuck.
+			net.minecraft.client.Minecraft.getInstance().gameMode.startDestroyBlock(miningPos, Direction.UP);
+		}
 	}
 }
