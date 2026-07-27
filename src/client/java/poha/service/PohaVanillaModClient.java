@@ -26,371 +26,348 @@ import net.minecraft.world.phys.Vec3;
  */
 public class PohaVanillaModClient implements ClientModInitializer {
 
-	// 26.2 requires a KeyMapping.Category object rather than a raw string.
-	private static final KeyMapping.Category CATEGORY =
-			KeyMapping.Category.register(PohaVanillaMod.id("movement"));
+    // 26.2 requires a KeyMapping.Category object rather than a raw string.
+    private static final KeyMapping.Category CATEGORY =
+            KeyMapping.Category.register(PohaVanillaMod.id("movement"));
 
-	// Bound to G: steps through the hardcoded sequence of build primitives
-	// you write yourself in buildSequence() below. One press announces the
-	// next step, the next press runs it.
-	private KeyMapping sequenceKey;
+    // Bound to G: steps through the hardcoded sequence of build primitives
+    // you write yourself in buildSequence() below. One press announces the
+    // next step, the next press runs it.
+    private KeyMapping sequenceKey;
 
-	// New: bound to H. Prints your current position, then shift-places
-	// prismarine 1 block in front of you and 2 blocks to your left,
-	// at your current Y-level.
-	private KeyMapping placeKey;
+    // Bound to H. Prints your current position, then shift-places
+    // prismarine 1 block in front of you and 2 blocks to your left,
+    // at your current Y-level.
+    private KeyMapping placeKey;
 
-	private java.util.List<BuildAction> sequence = null;
-	private int sequenceIndex = -1;
-	private boolean sequenceRunning = false;
+    // Bound to J: places and breaks a block 64 times in front of you automatically.
+    private KeyMapping placeBreak64Key;
 
-	// Pending shift-place state. A single tick of pre-sneaking isn't reliably
-	// enough on a real server: this is a known vanilla quirk where sneak-place
-	// on a container can race the server's own reconciliation of your sneak
-	// state, even for human players manually shift-right-clicking. Holding
-	// sneak for a longer window before clicking (mirroring what a person does
-	// by hand — sneak, pause, then click) makes it reliable. ~10 ticks (half
-	// a second) is a comfortable margin.
-	private static final int SNEAK_WARMUP_TICKS = 10;
+    private java.util.List<BuildAction> sequence = null;
+    private int sequenceIndex = -1;
+    private boolean sequenceRunning = false;
 
-	private int placeCountdown = -1;
-	private BlockPos pendingClickPos;
-	private Direction pendingClickFace;
-	private int pendingHotbarSlot;
-	private int pendingPreviousSlot;
-	private boolean pendingWasSneaking;
+    // Pending shift-place state.
+    private static final int SNEAK_WARMUP_TICKS = 10;
 
-	// Auto-mine-after-place state. Note this drives the same
-	// start/continue/stopDestroyBlock loop vanilla runs while you hold left
-	// click — it does not skip or shorten the real mining time for the
-	// block/tool combination, it just automates holding the button down.
-	private BlockPos miningPos;
-	private int miningPreviousSlot;
-	private boolean mining = false;
+    private int placeCountdown = -1;
+    private BlockPos pendingClickPos;
+    private Direction pendingClickFace;
+    private int pendingHotbarSlot;
+    private int pendingPreviousSlot;
+    private boolean pendingWasSneaking;
 
-	// H toggles this on/off. While true, a new place-then-break cycle is
-	// kicked off automatically as soon as the previous one finishes.
-	private boolean looping = false;
+    // Auto-mine-after-place state.
+    private BlockPos miningPos;
+    private int miningPreviousSlot;
+    private boolean mining = false;
 
-	@Override
-	public void onInitializeClient() {
-		sequenceKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
-				"key.poha.run_sequence",
-				InputConstants.Type.KEYSYM,
-				GLFW.GLFW_KEY_G,
-				CATEGORY
-		));
+    // H toggles this on/off.
+    private boolean looping = false;
 
-		placeKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
-				"key.poha.place_offset",
-				InputConstants.Type.KEYSYM,
-				GLFW.GLFW_KEY_H,
-				CATEGORY
-		));
+    @Override
+    public void onInitializeClient() {
+        sequenceKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+                "key.poha.run_sequence",
+                InputConstants.Type.KEYSYM,
+                GLFW.GLFW_KEY_G,
+                CATEGORY
+        ));
 
-		ClientTickEvents.END_CLIENT_TICK.register(client -> {
-			if (client.player == null) return;
+        placeKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+                "key.poha.place_offset",
+                InputConstants.Type.KEYSYM,
+                GLFW.GLFW_KEY_H,
+                CATEGORY
+        ));
 
-			while (sequenceKey.consumeClick()) {
-				if (sequence == null) {
-					sequence = buildSequence();
-					sequenceIndex = 0;
-					sequenceRunning = false;
-					if (sequence.isEmpty()) {
-						client.player.sendSystemMessage(Component.literal("buildSequence() is empty — nothing to run."));
-						sequence = null;
-					} else {
-						client.player.sendSystemMessage(Component.literal("Next: " + sequence.get(0).describe()));
-					}
-				} else if (!sequenceRunning) {
-					BuildAction action = sequence.get(sequenceIndex);
-					action.begin(client.player, client.player.level(), client.options);
-					sequenceRunning = true;
-				}
-			}
-			if (sequence != null && sequenceRunning) {
-				tickSequence(client.player, client.player.level(), client.options);
-			}
+        placeBreak64Key = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+                "key.poha.place_break_64",
+                InputConstants.Type.KEYSYM,
+                GLFW.GLFW_KEY_J,
+                CATEGORY
+        ));
 
-			if (placeCountdown > 0) {
-				placeCountdown--;
-			} else if (placeCountdown == 0) {
-				performPendingPlacement(client.player, client.options.keyShift);
-				placeCountdown = -1;
-			}
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            if (client.player == null) return;
 
-			if (mining) {
-				tickMining(client.player);
-			}
+            while (sequenceKey.consumeClick()) {
+                if (sequence == null) {
+                    sequence = buildSequence();
+                    sequenceIndex = 0;
+                    sequenceRunning = false;
+                    if (sequence.isEmpty()) {
+                        client.player.sendSystemMessage(Component.literal("buildSequence() is empty — nothing to run."));
+                        sequence = null;
+                    } else {
+                        client.player.sendSystemMessage(Component.literal("Next: " + sequence.get(0).describe()));
+                    }
+                } else if (!sequenceRunning) {
+                    BuildAction action = sequence.get(sequenceIndex);
+                    action.begin(client.player, client.player.level(), client.options);
+                    sequenceRunning = true;
+                }
+            }
 
-			while (placeKey.consumeClick()) {
-				looping = !looping;
-				if (looping) {
-					client.player.sendSystemMessage(Component.literal("Loop started. Press H again to stop."));
-					beginOffsetPlacement(client.player, client.options.keyShift);
-				} else {
-					client.player.sendSystemMessage(Component.literal("Loop stopping after this cycle."));
-				}
-			}
-		});
-	}
+            while (placeBreak64Key.consumeClick()) {
+                if (sequenceRunning) {
+                    client.player.sendSystemMessage(Component.literal("A sequence is already running!"));
+                } else {
+                    sequence = new java.util.ArrayList<>();
+                    sequence.add(new PlaceAndBreakRepeatAction(64));
+                    sequenceIndex = 0;
+                    sequenceRunning = true;
+                    sequence.get(0).begin(client.player, client.player.level(), client.options);
+                }
+            }
 
-	// Hotbar is 0-indexed internally; slot 6 as a player counts it (1-9) is
-	// index 5.
-	private static final int SOURCE_HOTBAR_SLOT = 5;
+            if (sequence != null && sequenceRunning) {
+                tickSequence(client.player, client.player.level(), client.options);
+            }
 
-	// EDIT THIS to build your own structure. One press of G announces the
-	// next step; the next press runs it. See the primitive helpers below —
-	// place()/breakBlock() act on the block directly in front of you, using
-	// your *current* real facing at the moment each step actually runs
-	// (so turns you queue earlier really do affect later moves/placements).
-	private java.util.List<BuildAction> buildSequence() {
-		java.util.List<BuildAction> steps = new java.util.ArrayList<>();
+            if (placeCountdown > 0) {
+                placeCountdown--;
+            } else if (placeCountdown == 0) {
+                performPendingPlacement(client.player, client.options.keyShift);
+                placeCountdown = -1;
+            }
 
-		// Example: a 3-block straight line, then turn right and add one more
-		// block off to the side — just to show the primitives composing.
-		// lookForPlace() here demonstrates real-raycast targeting for the
-		// first block; the rest fall back to "in front of me" since there's
-		// no lookForPlace() call right before them.
- 		steps.add(lookForPlace());
-		steps.add(place());
-		steps.add(turnRight());
-		steps.add(moveForward(1));
-		steps.add(lookForPlace());
-		steps.add(place());
-		steps.add(jumpForward());
+            if (mining) {
+                tickMining(client.player);
+            }
 
-		return steps;
-	}
+            while (placeKey.consumeClick()) {
+                looping = !looping;
+                if (looping) {
+                    client.player.sendSystemMessage(Component.literal("Loop started. Press H again to stop."));
+                    beginOffsetPlacement(client.player, client.options.keyShift);
+                } else {
+                    client.player.sendSystemMessage(Component.literal("Loop stopping after this cycle."));
+                }
+            }
+        });
+    }
 
-	// --- Primitive helpers — build your sequence out of these ---
-	private BuildAction moveForward(int blocks) { return new MoveAction(MoveDir.FORWARD, blocks); }
-	private BuildAction moveBack(int blocks)    { return new MoveAction(MoveDir.BACK, blocks); }
-	private BuildAction moveLeft(int blocks)    { return new MoveAction(MoveDir.LEFT, blocks); }
-	private BuildAction moveRight(int blocks)   { return new MoveAction(MoveDir.RIGHT, blocks); }
-	private BuildAction turnLeft()              { return new TurnAction(false); }
-	private BuildAction turnRight()             { return new TurnAction(true); }
-	private BuildAction place()                 { return new PlaceAction(); }
-	private BuildAction breakBlock()             { return new BreakAction(); }
-	private BuildAction lookForPlace()          { return new LookForPlaceAction(); }
-	private BuildAction jumpForward() { return new JumpForwardAction(); }
+    // Hotbar is 0-indexed internally; slot 6 is index 5.
+    private static final int SOURCE_HOTBAR_SLOT = 5;
 
-	// Set by lookForPlace(), consumed by the very next place()/breakBlock().
-	// If null when place()/breakBlock() runs, they fall back to the plain
-	// "1 block directly in front of me" behavior instead.
-	private BlockHitResult lookedAtHit = null;
+    private java.util.List<BuildAction> buildSequence() {
+        java.util.List<BuildAction> steps = new java.util.ArrayList<>();
 
-	private void tickSequence(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-		BuildAction action = sequence.get(sequenceIndex);
-		boolean done = action.tick(player, level, options);
-		if (!done) return;
+        steps.add(lookForPlace());
+        steps.add(place());
+        steps.add(turnRight());
+        steps.add(moveForward(1));
+        steps.add(lookForPlace());
+        steps.add(place());
+        steps.add(jumpForward());
 
-		sequenceRunning = false;
-		sequenceIndex++;
-		if (sequenceIndex >= sequence.size()) {
-			player.sendSystemMessage(Component.literal("Sequence complete!"));
-			sequence = null;
-			sequenceIndex = -1;
-		} else {
-			player.sendSystemMessage(Component.literal("Next: " + sequence.get(sequenceIndex).describe()));
-		}
-	}
+        return steps;
+    }
 
-	// One step in a sequence. Each is driven by real, measured player
-	// state — actual distance traveled, actual yaw, actual block state —
-	// checked every tick, rather than a fixed timer alone.
-	private abstract static class BuildAction {
-		void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {}
-		abstract boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options);
-		abstract String describe();
-	}
+    // --- Primitive helpers ---
+    private BuildAction moveForward(int blocks) { return new MoveAction(MoveDir.FORWARD, blocks); }
+    private BuildAction moveBack(int blocks)    { return new MoveAction(MoveDir.BACK, blocks); }
+    private BuildAction moveLeft(int blocks)    { return new MoveAction(MoveDir.LEFT, blocks); }
+    private BuildAction moveRight(int blocks)   { return new MoveAction(MoveDir.RIGHT, blocks); }
+    private BuildAction turnLeft()              { return new TurnAction(false); }
+    private BuildAction turnRight()             { return new TurnAction(true); }
+    private BuildAction place()                 { return new PlaceAction(); }
+    private BuildAction breakBlock()            { return new BreakAction(); }
+    private BuildAction lookForPlace()         { return new LookForPlaceAction(); }
+    private BuildAction jumpForward()          { return new JumpForwardAction(); }
 
-	private enum MoveDir { FORWARD, BACK, LEFT, RIGHT }
+    private BlockHitResult lookedAtHit = null;
 
-	// Real movement: holds the actual Forward/Back/Strafe-Left/Strafe-Right
-	// keybinding until the player has genuinely moved the requested
-	// distance, measured from their real position — not a guessed tick count.
-	private class MoveAction extends BuildAction {
-		final MoveDir dir;
-		final double blocks;
-		Vec3 startPos;
-		int ticks = 0;
-		static final int TIMEOUT_TICKS_PER_BLOCK = 30;
+    private void tickSequence(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        BuildAction action = sequence.get(sequenceIndex);
+        boolean done = action.tick(player, level, options);
+        if (!done) return;
 
-		MoveAction(MoveDir dir, int blocks) {
-			this.dir = dir;
-			this.blocks = blocks;
-		}
+        sequenceRunning = false;
+        sequenceIndex++;
+        if (sequenceIndex >= sequence.size()) {
+            player.sendSystemMessage(Component.literal("Sequence complete!"));
+            sequence = null;
+            sequenceIndex = -1;
+        } else {
+            player.sendSystemMessage(Component.literal("Next: " + sequence.get(sequenceIndex).describe()));
+        }
+    }
 
-		@Override
-		void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-			startPos = player.position();
-			keyFor(options).setDown(true);
-		}
+    private abstract static class BuildAction {
+        void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {}
+        abstract boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options);
+        abstract String describe();
+    }
 
-		@Override
-		boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-			ticks++;
-			double traveled = player.position().distanceTo(startPos);
-			boolean arrived = traveled >= blocks - 0.15;
-			boolean timedOut = ticks >= TIMEOUT_TICKS_PER_BLOCK * Math.max(1, (int) blocks);
-			if (arrived || timedOut) {
-				keyFor(options).setDown(false);
-				if (timedOut && !arrived) {
-					player.sendSystemMessage(Component.literal(
-							"Didn't confirm moving the full distance — continuing anyway."));
-				}
-				return true;
-			}
-			return false;
-		}
+    private enum MoveDir { FORWARD, BACK, LEFT, RIGHT }
 
-		private KeyMapping keyFor(net.minecraft.client.Options options) {
-			switch (dir) {
-				case FORWARD: return options.keyUp;
-				case BACK: return options.keyDown;
-				case LEFT: return options.keyLeft;
-				case RIGHT: return options.keyRight;
-				default: throw new IllegalStateException("unreachable");
-			}
-		}
+    private class MoveAction extends BuildAction {
+        final MoveDir dir;
+        final double blocks;
+        Vec3 startPos;
+        int ticks = 0;
+        static final int TIMEOUT_TICKS_PER_BLOCK = 30;
 
-		@Override
-		String describe() {
-			return "move " + dir.name().toLowerCase() + " " + (int) blocks + " block(s)";
-		}
-	}
+        MoveAction(MoveDir dir, int blocks) {
+            this.dir = dir;
+            this.blocks = blocks;
+        }
 
-	// Real camera rotation: turns exactly 90 degrees to the next cardinal
-	// direction, smoothly over a few ticks, using the player's actual current
-	// facing (player.getDirection(), derived from real yaw) so it's always
-	// correct even if earlier turns already happened.
-	private class TurnAction extends BuildAction {
-		final boolean turnRight;
-		float startYaw;
-		float targetYaw;
-		int ticks = 0;
-		static final int DURATION_TICKS = 5;
+        @Override
+        void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            startPos = player.position();
+            keyFor(options).setDown(true);
+        }
 
-		TurnAction(boolean turnRight) {
-			this.turnRight = turnRight;
-		}
+        @Override
+        boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            ticks++;
+            double traveled = player.position().distanceTo(startPos);
+            boolean arrived = traveled >= blocks - 0.15;
+            boolean timedOut = ticks >= TIMEOUT_TICKS_PER_BLOCK * Math.max(1, (int) blocks);
+            if (arrived || timedOut) {
+                keyFor(options).setDown(false);
+                if (timedOut && !arrived) {
+                    player.sendSystemMessage(Component.literal(
+                            "Didn't confirm moving the full distance — continuing anyway."));
+                }
+                return true;
+            }
+            return false;
+        }
 
-		@Override
-		void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-			Direction current = player.getDirection();
-			Direction target = turnRight ? current.getClockWise() : current.getCounterClockWise();
-			startYaw = player.getYRot();
-			targetYaw = startYaw + Mth.wrapDegrees(target.toYRot() - startYaw);
-		}
+        private KeyMapping keyFor(net.minecraft.client.Options options) {
+            switch (dir) {
+                case FORWARD: return options.keyUp;
+                case BACK: return options.keyDown;
+                case LEFT: return options.keyLeft;
+                case RIGHT: return options.keyRight;
+                default: throw new IllegalStateException("unreachable");
+            }
+        }
 
-		@Override
-		boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-			ticks++;
-			float t = Math.min(1f, ticks / (float) DURATION_TICKS);
-			player.setYRot(startYaw + (targetYaw - startYaw) * t);
-			if (t >= 1f) {
-				player.setYRot(targetYaw);
-				return true;
-			}
-			return false;
-		}
+        @Override
+        String describe() {
+            return "move " + dir.name().toLowerCase() + " " + (int) blocks + " block(s)";
+        }
+    }
 
-		@Override
-		String describe() {
-			return "turn " + (turnRight ? "right" : "left");
-		}
-	}
+    private class TurnAction extends BuildAction {
+        final boolean turnRight;
+        float startYaw;
+        float targetYaw;
+        int ticks = 0;
+        static final int DURATION_TICKS = 5;
 
-	// Finds a real spot to place/break at (currently: an existing solid
-	// neighbor near the block directly in front of you, at foot level — same
-	// default the fallback path uses), then actually turns the camera —
-	// yaw AND pitch — to genuinely look at it, smoothly over a few ticks.
-	// Only once the camera has really moved there does it confirm with a
-	// raycast, the same way the game itself decides what your crosshair is
-	// on. This is what makes it "simulate my view" rather than just reading
-	// whatever direction happened to already be pointed.
-	private class LookForPlaceAction extends BuildAction {
-		private static final double REACH = 4.5; // typical survival block reach
-		private static final int DURATION_TICKS = 8;
+        TurnAction(boolean turnRight) {
+            this.turnRight = turnRight;
+        }
 
-		BlockHitResult candidate;
-		float startYaw, startPitch, targetYaw, targetPitch;
-		int ticks = 0;
+        @Override
+        void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            Direction current = player.getDirection();
+            Direction target = turnRight ? current.getClockWise() : current.getCounterClockWise();
+            startYaw = player.getYRot();
+            targetYaw = startYaw + Mth.wrapDegrees(target.toYRot() - startYaw);
+        }
 
-		@Override
-		void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-			BlockPos front = player.blockPosition().relative(player.getDirection(), 1);
-			candidate = findClickableFace(level, front);
-			if (candidate == null) {
-				player.sendSystemMessage(Component.literal("Nothing nearby to look at."));
-				return;
-			}
+        @Override
+        boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            ticks++;
+            float t = Math.min(1f, ticks / (float) DURATION_TICKS);
+            player.setYRot(startYaw + (targetYaw - startYaw) * t);
+            if (t >= 1f) {
+                player.setYRot(targetYaw);
+                return true;
+            }
+            return false;
+        }
 
-			Vec3 eyePos = player.getEyePosition(1.0f);
-			Vec3 lookAt = candidate.getLocation(); // exact point on the face we found
-			Vec3 diff = lookAt.subtract(eyePos);
-			double horizontalDist = Math.sqrt(diff.x * diff.x + diff.z * diff.z);
-			float rawYaw = (float) Math.toDegrees(Math.atan2(-diff.x, diff.z));
-			float rawPitch = (float) -Math.toDegrees(Math.atan2(diff.y, horizontalDist));
+        @Override
+        String describe() {
+            return "turn " + (turnRight ? "right" : "left");
+        }
+    }
 
-			startYaw = player.getYRot();
-			startPitch = player.getXRot();
-			targetYaw = startYaw + Mth.wrapDegrees(rawYaw - startYaw);
-			targetPitch = rawPitch;
-		}
+    private class LookForPlaceAction extends BuildAction {
+        private static final double REACH = 4.5;
+        private static final int DURATION_TICKS = 8;
 
-		@Override
-		boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-			if (candidate == null) {
-				return true; // begin() already messaged why
-			}
+        BlockHitResult candidate;
+        float startYaw, startPitch, targetYaw, targetPitch;
+        int ticks = 0;
 
-			ticks++;
-			float t = Math.min(1f, ticks / (float) DURATION_TICKS);
-			player.setYRot(startYaw + (targetYaw - startYaw) * t);
-			player.setXRot(startPitch + (targetPitch - startPitch) * t);
-			if (t < 1f) {
-				return false;
-			}
-			player.setYRot(targetYaw);
-			player.setXRot(targetPitch);
+        @Override
+        void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            BlockPos front = player.blockPosition().relative(player.getDirection(), 1);
+            candidate = findClickableFace(level, front);
+            if (candidate == null) {
+                player.sendSystemMessage(Component.literal("Nothing nearby to look at."));
+                return;
+            }
 
-			// Camera has genuinely moved there now — confirm with a real
-			// raycast, same as the game deciding what your crosshair is on.
-			Vec3 eyePos = player.getEyePosition(1.0f);
-			Vec3 look = player.getViewVector(1.0f);
-			Vec3 endPos = eyePos.add(look.scale(REACH));
-			net.minecraft.world.level.ClipContext ctx = new net.minecraft.world.level.ClipContext(
-					eyePos, endPos,
-					net.minecraft.world.level.ClipContext.Block.OUTLINE,
-					net.minecraft.world.level.ClipContext.Fluid.NONE,
-					player);
-			BlockHitResult hit = level.clip(ctx);
+            Vec3 eyePos = player.getEyePosition(1.0f);
+            Vec3 lookAt = candidate.getLocation();
+            Vec3 diff = lookAt.subtract(eyePos);
+            double horizontalDist = Math.sqrt(diff.x * diff.x + diff.z * diff.z);
+            float rawYaw = (float) Math.toDegrees(Math.atan2(-diff.x, diff.z));
+            float rawPitch = (float) -Math.toDegrees(Math.atan2(diff.y, horizontalDist));
 
-			if (hit.getType() == net.minecraft.world.phys.HitResult.Type.MISS) {
-				player.sendSystemMessage(Component.literal("Turned to look, but nothing in range to target."));
-				lookedAtHit = null;
-			} else {
-				lookedAtHit = hit;
-				player.sendSystemMessage(Component.literal("Targeting " + hit.getBlockPos()));
-			}
-			return true;
-		}
+            startYaw = player.getYRot();
+            startPitch = player.getXRot();
+            targetYaw = startYaw + Mth.wrapDegrees(rawYaw - startYaw);
+            targetPitch = rawPitch;
+        }
 
-		@Override
-		String describe() {
-			return "look for a block to target";
-		}
-	}
+        @Override
+        boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            if (candidate == null) {
+                return true;
+            }
 
-// Jumps up 1 block onto the ledge directly in front of the player by 
-    // simulating key mapping input on every tick.
+            ticks++;
+            float t = Math.min(1f, ticks / (float) DURATION_TICKS);
+            player.setYRot(startYaw + (targetYaw - startYaw) * t);
+            player.setXRot(startPitch + (targetPitch - startPitch) * t);
+            if (t < 1f) {
+                return false;
+            }
+            player.setYRot(targetYaw);
+            player.setXRot(targetPitch);
+
+            Vec3 eyePos = player.getEyePosition(1.0f);
+            Vec3 look = player.getViewVector(1.0f);
+            Vec3 endPos = eyePos.add(look.scale(REACH));
+            net.minecraft.world.level.ClipContext ctx = new net.minecraft.world.level.ClipContext(
+                    eyePos, endPos,
+                    net.minecraft.world.level.ClipContext.Block.OUTLINE,
+                    net.minecraft.world.level.ClipContext.Fluid.NONE,
+                    player);
+            BlockHitResult hit = level.clip(ctx);
+
+            if (hit.getType() == net.minecraft.world.phys.HitResult.Type.MISS) {
+                player.sendSystemMessage(Component.literal("Turned to look, but nothing in range to target."));
+                lookedAtHit = null;
+            } else {
+                lookedAtHit = hit;
+                player.sendSystemMessage(Component.literal("Targeting " + hit.getBlockPos()));
+            }
+            return true;
+        }
+
+        @Override
+        String describe() {
+            return "look for a block to target";
+        }
+    }
+
     private class JumpForwardAction extends BuildAction {
         private double startY;
         private Vec3 startPos;
         private int ticks = 0;
-        private static final int TIMEOUT_TICKS = 40; // 2-second fallback safety
+        private static final int TIMEOUT_TICKS = 40;
 
         @Override
         void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
@@ -398,7 +375,6 @@ public class PohaVanillaModClient implements ClientModInitializer {
             startPos = player.position();
             ticks = 0;
 
-            // Start holding forward and jump
             options.keyUp.setDown(true);
             options.keyJump.setDown(true);
         }
@@ -407,25 +383,20 @@ public class PohaVanillaModClient implements ClientModInitializer {
         boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
             ticks++;
 
-            // Re-assert key down states each tick; vanilla's input loop can reset them
             options.keyUp.setDown(true);
 
             if (player.onGround() && ticks < 10) {
-                // Keep jump held while on the ground so the client processes the press
                 options.keyJump.setDown(true);
             } else {
-                // Release jump key once airborne (or after initial attempt) to avoid continuous hopping
                 options.keyJump.setDown(false);
             }
 
-            // Check if we've successfully gained altitude and landed
             boolean gainedHeight = player.getY() >= startY + 0.8;
             boolean movedForward = player.position().subtract(startPos).horizontalDistance() >= 0.8;
             boolean landed = ticks > 5 && player.onGround(); 
             boolean timedOut = ticks >= TIMEOUT_TICKS;
 
             if ((landed && gainedHeight && movedForward) || timedOut) {
-                // Clean up input bindings
                 options.keyJump.setDown(false);
                 options.keyUp.setDown(false);
 
@@ -435,7 +406,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
                 return true;
             }
 
-            return false; // Still in mid-air or executing jump
+            return false;
         }
 
         @Override
@@ -444,14 +415,10 @@ public class PohaVanillaModClient implements ClientModInitializer {
         }
     }
 
-
-// Places one block. If the player is standing inside or too close to the 
-    // target block's bounding box, it automatically backs the player up first 
-    // until the space is clear before placing.
     private class PlaceAction extends BuildAction {
         private boolean backingUp = false;
         private Vec3 startPos = null;
-        private static final int BACKUP_TIMEOUT_TICKS = 20; // 1 second safety cap
+        private static final int BACKUP_TIMEOUT_TICKS = 20;
         private int backupTicks = 0;
 
         @Override
@@ -459,7 +426,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
             BlockHitResult hitResult;
             if (lookedAtHit != null) {
                 hitResult = lookedAtHit;
-                lookedAtHit = null; // one-shot: consumed here
+                lookedAtHit = null;
             } else {
                 BlockPos target = player.blockPosition().relative(player.getDirection(), 1);
                 hitResult = findClickableFace(level, target);
@@ -472,14 +439,13 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
             BlockPos placeTarget = hitResult.getBlockPos().relative(hitResult.getDirection());
 
-            // 1. Check if the player bounding box overlaps the target block space
             net.minecraft.world.phys.AABB targetBox = new net.minecraft.world.phys.AABB(placeTarget);
             if (player.getBoundingBox().intersects(targetBox)) {
                 if (!backingUp) {
                     backingUp = true;
                     backupTicks = 0;
                     startPos = player.position();
-                    options.keyDown.setDown(true); // Start moving backward
+                    options.keyDown.setDown(true);
                 }
 
                 backupTicks++;
@@ -487,10 +453,9 @@ public class PohaVanillaModClient implements ClientModInitializer {
                 boolean cleared = !player.getBoundingBox().intersects(targetBox);
 
                 if (!cleared && !timedOut) {
-                    return false; // Yield tick: still backing up to clear collision
+                    return false;
                 }
 
-                // Stop moving backward once clear or timed out
                 cleanupBackup(options);
 
                 if (timedOut) {
@@ -501,9 +466,8 @@ public class PohaVanillaModClient implements ClientModInitializer {
                 cleanupBackup(options);
             }
 
-            // 2. Perform placement once space is clear
             if (!level.getBlockState(placeTarget).canBeReplaced()) {
-                return true; // Already occupied — nothing to do
+                return true;
             }
 
             ItemStack stack = player.getInventory().getItem(SOURCE_HOTBAR_SLOT);
@@ -536,209 +500,285 @@ public class PohaVanillaModClient implements ClientModInitializer {
         }
     }
 
-	// Breaks a block. If lookForPlace() was called just before this step,
-	// breaks whatever that raycast actually targeted. Otherwise falls back
-	// to the block directly in front of the player's current facing.
-	private class BreakAction extends BuildAction {
-		BlockPos target;
+    private class BreakAction extends BuildAction {
+        BlockPos target;
 
-		@Override
-		void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-			if (lookedAtHit != null) {
-				target = lookedAtHit.getBlockPos();
-				lookedAtHit = null; // one-shot: consumed here
-			} else {
-				target = player.blockPosition().relative(player.getDirection(), 1);
-			}
-			net.minecraft.client.Minecraft.getInstance().gameMode.startDestroyBlock(target, Direction.UP);
-		}
+        @Override
+        void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            if (lookedAtHit != null) {
+                target = lookedAtHit.getBlockPos();
+                lookedAtHit = null;
+            } else {
+                target = player.blockPosition().relative(player.getDirection(), 1);
+            }
+            net.minecraft.client.Minecraft.getInstance().gameMode.startDestroyBlock(target, Direction.UP);
+        }
 
-		@Override
-		boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-			if (level.getBlockState(target).isAir()) {
-				net.minecraft.client.Minecraft.getInstance().gameMode.stopDestroyBlock();
-				return true;
-			}
+        @Override
+        boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            if (level.getBlockState(target).isAir()) {
+                net.minecraft.client.Minecraft.getInstance().gameMode.stopDestroyBlock();
+                return true;
+            }
 
-			int toolSlot = -1;
-			for (int i = 0; i < 9; i++) {
-				ItemStack stack = player.getInventory().getItem(i);
-				if (!stack.isEmpty() && stack.isCorrectToolForDrops(level.getBlockState(target))) {
-					toolSlot = i;
-					break;
-				}
-			}
-			int previousSlot = player.getInventory().getSelectedSlot();
-			if (toolSlot != -1) {
-				player.getInventory().setSelectedSlot(toolSlot);
-			}
-			net.minecraft.client.Minecraft.getInstance().gameMode.continueDestroyBlock(target, Direction.UP);
-			player.getInventory().setSelectedSlot(previousSlot);
-			return false;
-		}
+            int toolSlot = -1;
+            for (int i = 0; i < 9; i++) {
+                ItemStack stack = player.getInventory().getItem(i);
+                if (!stack.isEmpty() && stack.isCorrectToolForDrops(level.getBlockState(target))) {
+                    toolSlot = i;
+                    break;
+                }
+            }
+            int previousSlot = player.getInventory().getSelectedSlot();
+            if (toolSlot != -1) {
+                player.getInventory().setSelectedSlot(toolSlot);
+            }
+            net.minecraft.client.Minecraft.getInstance().gameMode.continueDestroyBlock(target, Direction.UP);
+            player.getInventory().setSelectedSlot(previousSlot);
+            return false;
+        }
 
-		@Override
-		String describe() {
-			return "break the block in front of me";
-		}
-	}
+        @Override
+        String describe() {
+            return "break the block in front of me";
+        }
+    }
 
-	// Finds any existing, non-replaceable neighbor of pos to click against —
-	// checking straight down first (the common "place on the floor/on top of
-	// what I just placed" case), then the four side faces.
-	private BlockHitResult findClickableFace(Level level, BlockPos pos) {
-		BlockPos below = pos.below();
-		if (!level.getBlockState(below).canBeReplaced()) {
-			return buildHitResult(below, Direction.UP);
-		}
-		for (Direction d : Direction.Plane.HORIZONTAL) {
-			BlockPos neighbor = pos.relative(d);
-			if (!level.getBlockState(neighbor).canBeReplaced()) {
-				return buildHitResult(neighbor, d.getOpposite());
-			}
-		}
-		return null;
-	}
+    private class PlaceAndBreakRepeatAction extends BuildAction {
+        private final int targetCycles;
+        private int completedCycles = 0;
 
-	private BlockHitResult buildHitResult(BlockPos clickedPos, Direction clickedFace) {
-		Vec3 hitVec = Vec3.atCenterOf(clickedPos).add(
-				clickedFace.getStepX() * 0.5, clickedFace.getStepY() * 0.5, clickedFace.getStepZ() * 0.5);
-		return new BlockHitResult(hitVec, clickedFace, clickedPos, false);
-	}
+        private enum Stage { PLACE, MINE }
+        private Stage currentStage = Stage.PLACE;
 
-	private void beginOffsetPlacement(LocalPlayer player, KeyMapping sneakKey) {
-		if (placeCountdown >= 0 || mining) return; // already mid-sequence
+        private BlockPos targetPos;
+        private int previousSlot;
 
-		Level level = player.level();
-		BlockPos origin = player.blockPosition();
+        PlaceAndBreakRepeatAction(int targetCycles) {
+            this.targetCycles = targetCycles;
+        }
 
-		// Facing direction, and "left" relative to that facing.
-		Direction facing = player.getDirection();
-		Direction left = facing.getCounterClockWise();
+        @Override
+        void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            completedCycles = 0;
+            currentStage = Stage.PLACE;
+            player.sendSystemMessage(Component.literal("Starting " + targetCycles + "x place-and-break cycle..."));
+        }
 
-		BlockPos target = origin.relative(facing, 1).relative(left, 2);
+        @Override
+        boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            if (completedCycles >= targetCycles) {
+                player.sendSystemMessage(Component.literal("Completed " + targetCycles + " cycles!"));
+                return true;
+            }
 
-		// Whatever's in hotbar slot 6 — no auto-give here, if it's empty or
-		// not a placeable block, say so and stop.
-		int hotbarSlot = SOURCE_HOTBAR_SLOT;
-		ItemStack slotStack = player.getInventory().getItem(hotbarSlot);
-		if (slotStack.isEmpty() || !(slotStack.getItem() instanceof net.minecraft.world.item.BlockItem)) {
-			player.sendSystemMessage(Component.literal("Hotbar slot 6 doesn't have a placeable block in it."));
-			looping = false;
-			return;
-		}
+            switch (currentStage) {
+                case PLACE:
+                    if (!executePlace(player, level)) {
+                        return true;
+                    }
+                    currentStage = Stage.MINE;
+                    net.minecraft.client.Minecraft.getInstance().gameMode
+                            .startDestroyBlock(targetPos, Direction.UP);
+                    return false;
 
-		if (!level.getBlockState(target).canBeReplaced()) {
-			player.sendSystemMessage(Component.literal("Target position " + target + " is already occupied."));
-			looping = false;
-			return;
-		}
+                case MINE:
+                    if (level.getBlockState(targetPos).isAir()) {
+                        net.minecraft.client.Minecraft.getInstance().gameMode.stopDestroyBlock();
+                        player.getInventory().setSelectedSlot(previousSlot);
 
-		// The whole point of shift-placing here is that we're clicking on a
-		// hopper: a normal right-click would open its inventory screen instead
-		// of placing a block, so we specifically require a hopper below the
-		// target and rely on sneaking to suppress that screen.
-		BlockPos below = target.below();
-		if (!level.getBlockState(below).is(net.minecraft.world.level.block.Blocks.HOPPER)) {
-			player.sendSystemMessage(
-					Component.literal("No hopper at " + below + " (below the target position) to place on."));
-			looping = false;
-			return;
-		}
+                        completedCycles++;
+                        currentStage = Stage.PLACE;
+                    } else {
+                        net.minecraft.client.Minecraft.getInstance().gameMode
+                                .continueDestroyBlock(targetPos, Direction.UP);
+                    }
+                    return false;
+            }
 
-		// Stage everything, drive the actual Sneak keybinding now, and place
-		// once the countdown runs out. Driving the keybinding (rather than
-		// player.setShiftKeyDown directly) is what actually makes the client
-		// crouch, animate, and sync sneaking to the server — the same reason
-		// client.options.keyUp.setDown() is what drives auto-walk above.
-		pendingClickPos = below;
-		pendingClickFace = Direction.UP;
-		pendingHotbarSlot = hotbarSlot;
-		pendingPreviousSlot = player.getInventory().getSelectedSlot();
-		pendingWasSneaking = sneakKey.isDown();
+            return false;
+        }
 
-		player.getInventory().setSelectedSlot(hotbarSlot);
-		sneakKey.setDown(true);
-		placeCountdown = SNEAK_WARMUP_TICKS;
-	}
+        private boolean executePlace(LocalPlayer player, Level level) {
+            BlockPos target = player.blockPosition().relative(player.getDirection(), 1);
+            BlockHitResult hitResult = findClickableFace(level, target);
+            if (hitResult == null) {
+                player.sendSystemMessage(Component.literal("No valid block face to place against."));
+                return false;
+            }
 
-	private void performPendingPlacement(LocalPlayer player, KeyMapping sneakKey) {
-		Vec3 hitVec = Vec3.atCenterOf(pendingClickPos).add(
-				pendingClickFace.getStepX() * 0.5, pendingClickFace.getStepY() * 0.5, pendingClickFace.getStepZ() * 0.5);
-		BlockHitResult hitResult = new BlockHitResult(hitVec, pendingClickFace, pendingClickPos, false);
+            targetPos = hitResult.getBlockPos().relative(hitResult.getDirection());
+            if (!level.getBlockState(targetPos).canBeReplaced()) {
+                player.sendSystemMessage(Component.literal("Target block position is not clear."));
+                return false;
+            }
 
-		net.minecraft.client.Minecraft.getInstance().gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
+            ItemStack stack = player.getInventory().getItem(SOURCE_HOTBAR_SLOT);
+            if (stack.isEmpty() || !(stack.getItem() instanceof net.minecraft.world.item.BlockItem)) {
+                player.sendSystemMessage(Component.literal("Hotbar slot 6 doesn't have blocks remaining."));
+                return false;
+            }
 
-		sneakKey.setDown(pendingWasSneaking);
+            previousSlot = player.getInventory().getSelectedSlot();
+            player.getInventory().setSelectedSlot(SOURCE_HOTBAR_SLOT);
+            net.minecraft.client.Minecraft.getInstance().gameMode
+                    .useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
 
-		// Immediately start mining the block we just placed, with a pickaxe
-		// from the hotbar if we have one.
-		BlockPos placedPos = pendingClickPos.relative(pendingClickFace);
-		// PickaxeItem no longer exists as of the tool-component rewrite
-		// (1.21.5+): tools are now data-driven, so check directly whether the
-		// stack is a correct tool for the specific block we just placed.
-		Level level = player.level();
-		int pickaxeSlot = -1;
-		for (int i = 0; i < 9; i++) {
-			ItemStack stack = player.getInventory().getItem(i);
-			if (!stack.isEmpty() && stack.isCorrectToolForDrops(level.getBlockState(placedPos))) {
-				pickaxeSlot = i;
-				break;
-			}
-		}
+            int toolSlot = findBestTool(player, level, targetPos);
+            if (toolSlot != -1) {
+                player.getInventory().setSelectedSlot(toolSlot);
+            }
 
-		if (pickaxeSlot == -1) {
-			player.sendSystemMessage(Component.literal("Placed it, but you don't have a pickaxe to break it with."));
-			player.getInventory().setSelectedSlot(pendingPreviousSlot);
-			looping = false;
-			return;
-		}
+            return true;
+        }
 
-		// Stop before grinding the tool down further if it's already below
-		// 80% durability remaining.
-		ItemStack toolStack = player.getInventory().getItem(pickaxeSlot);
-		if (toolStack.isDamageableItem()) {
-			int maxDamage = toolStack.getMaxDamage();
-			int damage = toolStack.getDamageValue();
-			double remainingFraction = maxDamage > 0 ? 1.0 - (damage / (double) maxDamage) : 1.0;
-			if (remainingFraction < 0.8) {
-				player.sendSystemMessage(Component.literal(
-						"Placed it, but your tool is below 80% durability (" +
-								Math.round(remainingFraction * 100) + "%) — stopping the loop."));
-				player.getInventory().setSelectedSlot(pendingPreviousSlot);
-				looping = false;
-				return;
-			}
-		}
+        private int findBestTool(LocalPlayer player, Level level, BlockPos pos) {
+            for (int i = 0; i < 9; i++) {
+                ItemStack stack = player.getInventory().getItem(i);
+                if (!stack.isEmpty() && stack.isCorrectToolForDrops(level.getBlockState(pos))) {
+                    return i;
+                }
+            }
+            return -1;
+        }
 
-		miningPos = placedPos;
-		miningPreviousSlot = pendingPreviousSlot;
-		player.getInventory().setSelectedSlot(pickaxeSlot);
-		net.minecraft.client.Minecraft.getInstance().gameMode.startDestroyBlock(miningPos, Direction.UP);
-		mining = true;
-	}
+        @Override
+        String describe() {
+            return "place and break block " + targetCycles + " times";
+        }
+    }
 
-	private void tickMining(LocalPlayer player) {
-		Level level = player.level();
+    private BlockHitResult findClickableFace(Level level, BlockPos pos) {
+        BlockPos below = pos.below();
+        if (!level.getBlockState(below).canBeReplaced()) {
+            return buildHitResult(below, Direction.UP);
+        }
+        for (Direction d : Direction.Plane.HORIZONTAL) {
+            BlockPos neighbor = pos.relative(d);
+            if (!level.getBlockState(neighbor).canBeReplaced()) {
+                return buildHitResult(neighbor, d.getOpposite());
+            }
+        }
+        return null;
+    }
 
-		if (level.getBlockState(miningPos).isAir()) {
-			// Done — the block broke since the last tick.
-			net.minecraft.client.Minecraft.getInstance().gameMode.stopDestroyBlock();
-			player.getInventory().setSelectedSlot(miningPreviousSlot);
-			mining = false;
+    private BlockHitResult buildHitResult(BlockPos clickedPos, Direction clickedFace) {
+        Vec3 hitVec = Vec3.atCenterOf(clickedPos).add(
+                clickedFace.getStepX() * 0.5, clickedFace.getStepY() * 0.5, clickedFace.getStepZ() * 0.5);
+        return new BlockHitResult(hitVec, clickedFace, clickedPos, false);
+    }
 
-			if (looping) {
-				beginOffsetPlacement(player, net.minecraft.client.Minecraft.getInstance().options.keyShift);
-			}
-			return;
-		}
+    private void beginOffsetPlacement(LocalPlayer player, KeyMapping sneakKey) {
+        if (placeCountdown >= 0 || mining) return;
 
-		boolean stillOnTarget = net.minecraft.client.Minecraft.getInstance().gameMode
-				.continueDestroyBlock(miningPos, Direction.UP);
-		if (!stillOnTarget) {
-			// Target/tool changed underneath us for some reason; restart the
-			// break rather than leaving it stuck.
-			net.minecraft.client.Minecraft.getInstance().gameMode.startDestroyBlock(miningPos, Direction.UP);
-		}
-	}
+        Level level = player.level();
+        BlockPos origin = player.blockPosition();
+
+        Direction facing = player.getDirection();
+        Direction left = facing.getCounterClockWise();
+
+        BlockPos target = origin.relative(facing, 1).relative(left, 2);
+
+        int hotbarSlot = SOURCE_HOTBAR_SLOT;
+        ItemStack slotStack = player.getInventory().getItem(hotbarSlot);
+        if (slotStack.isEmpty() || !(slotStack.getItem() instanceof net.minecraft.world.item.BlockItem)) {
+            player.sendSystemMessage(Component.literal("Hotbar slot 6 doesn't have a placeable block in it."));
+            looping = false;
+            return;
+        }
+
+        if (!level.getBlockState(target).canBeReplaced()) {
+            player.sendSystemMessage(Component.literal("Target position " + target + " is already occupied."));
+            looping = false;
+            return;
+        }
+
+        BlockPos below = target.below();
+        if (!level.getBlockState(below).is(net.minecraft.world.level.block.Blocks.HOPPER)) {
+            player.sendSystemMessage(
+                    Component.literal("No hopper at " + below + " (below the target position) to place on."));
+            looping = false;
+            return;
+        }
+
+        pendingClickPos = below;
+        pendingClickFace = Direction.UP;
+        pendingHotbarSlot = hotbarSlot;
+        pendingPreviousSlot = player.getInventory().getSelectedSlot();
+        pendingWasSneaking = sneakKey.isDown();
+
+        player.getInventory().setSelectedSlot(hotbarSlot);
+        sneakKey.setDown(true);
+        placeCountdown = SNEAK_WARMUP_TICKS;
+    }
+
+    private void performPendingPlacement(LocalPlayer player, KeyMapping sneakKey) {
+        Vec3 hitVec = Vec3.atCenterOf(pendingClickPos).add(
+                pendingClickFace.getStepX() * 0.5, pendingClickFace.getStepY() * 0.5, pendingClickFace.getStepZ() * 0.5);
+        BlockHitResult hitResult = new BlockHitResult(hitVec, pendingClickFace, pendingClickPos, false);
+
+        net.minecraft.client.Minecraft.getInstance().gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
+
+        sneakKey.setDown(pendingWasSneaking);
+
+        BlockPos placedPos = pendingClickPos.relative(pendingClickFace);
+        Level level = player.level();
+        int pickaxeSlot = -1;
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (!stack.isEmpty() && stack.isCorrectToolForDrops(level.getBlockState(placedPos))) {
+                pickaxeSlot = i;
+                break;
+            }
+        }
+
+        if (pickaxeSlot == -1) {
+            player.sendSystemMessage(Component.literal("Placed it, but you don't have a pickaxe to break it with."));
+            player.getInventory().setSelectedSlot(pendingPreviousSlot);
+            looping = false;
+            return;
+        }
+
+        ItemStack toolStack = player.getInventory().getItem(pickaxeSlot);
+        if (toolStack.isDamageableItem()) {
+            int maxDamage = toolStack.getMaxDamage();
+            int damage = toolStack.getDamageValue();
+            double remainingFraction = maxDamage > 0 ? 1.0 - (damage / (double) maxDamage) : 1.0;
+            if (remainingFraction < 0.8) {
+                player.sendSystemMessage(Component.literal(
+                        "Placed it, but your tool is below 80% durability (" +
+                                Math.round(remainingFraction * 100) + "%) — stopping the loop."));
+                player.getInventory().setSelectedSlot(pendingPreviousSlot);
+                looping = false;
+                return;
+            }
+        }
+
+        miningPos = placedPos;
+        miningPreviousSlot = pendingPreviousSlot;
+        player.getInventory().setSelectedSlot(pickaxeSlot);
+        net.minecraft.client.Minecraft.getInstance().gameMode.startDestroyBlock(miningPos, Direction.UP);
+        mining = true;
+    }
+
+    private void tickMining(LocalPlayer player) {
+        Level level = player.level();
+
+        if (level.getBlockState(miningPos).isAir()) {
+            net.minecraft.client.Minecraft.getInstance().gameMode.stopDestroyBlock();
+            player.getInventory().setSelectedSlot(miningPreviousSlot);
+            mining = false;
+
+            if (looping) {
+                beginOffsetPlacement(player, net.minecraft.client.Minecraft.getInstance().options.keyShift);
+            }
+            return;
+        }
+
+        boolean stillOnTarget = net.minecraft.client.Minecraft.getInstance().gameMode
+                .continueDestroyBlock(miningPos, Direction.UP);
+        if (!stillOnTarget) {
+            net.minecraft.client.Minecraft.getInstance().gameMode.startDestroyBlock(miningPos, Direction.UP);
+        }
+    }
 }
