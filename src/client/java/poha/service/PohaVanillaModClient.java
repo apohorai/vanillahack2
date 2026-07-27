@@ -152,15 +152,13 @@ public class PohaVanillaModClient implements ClientModInitializer {
 		// lookForPlace() here demonstrates real-raycast targeting for the
 		// first block; the rest fall back to "in front of me" since there's
 		// no lookForPlace() call right before them.
-		steps.add(lookForPlace());
-		steps.add(place());
-		steps.add(moveForward(1));
-		steps.add(place());
-		steps.add(moveForward(1));
+ 		steps.add(lookForPlace());
 		steps.add(place());
 		steps.add(turnRight());
 		steps.add(moveForward(1));
+		steps.add(lookForPlace());
 		steps.add(place());
+		steps.add(jumpForward());
 
 		return steps;
 	}
@@ -175,6 +173,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
 	private BuildAction place()                 { return new PlaceAction(); }
 	private BuildAction breakBlock()             { return new BreakAction(); }
 	private BuildAction lookForPlace()          { return new LookForPlaceAction(); }
+	private BuildAction jumpForward() { return new JumpForwardAction(); }
 
 	// Set by lookForPlace(), consumed by the very next place()/breakBlock().
 	// If null when place()/breakBlock() runs, they fall back to the plain
@@ -385,50 +384,157 @@ public class PohaVanillaModClient implements ClientModInitializer {
 		}
 	}
 
-	// Places one block. If lookForPlace() was called just before this step,
-	// uses that real raycast result (placing exactly where it targeted).
-	// Otherwise falls back to the block directly in front of the player's
-	// current facing.
-	private class PlaceAction extends BuildAction {
-		@Override
-		boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-			BlockHitResult hitResult;
-			if (lookedAtHit != null) {
-				hitResult = lookedAtHit;
-				lookedAtHit = null; // one-shot: consumed here
-			} else {
-				BlockPos target = player.blockPosition().relative(player.getDirection(), 1);
-				hitResult = findClickableFace(level, target);
-				if (hitResult == null) {
-					player.sendSystemMessage(Component.literal("No adjacent block to place " + target + " against."));
-					return true;
-				}
-			}
+// Jumps up 1 block onto the ledge directly in front of the player by 
+    // simulating key mapping input on every tick.
+    private class JumpForwardAction extends BuildAction {
+        private double startY;
+        private Vec3 startPos;
+        private int ticks = 0;
+        private static final int TIMEOUT_TICKS = 40; // 2-second fallback safety
 
-			BlockPos placeTarget = hitResult.getBlockPos().relative(hitResult.getDirection());
-			if (!level.getBlockState(placeTarget).canBeReplaced()) {
-				return true; // already occupied — nothing to do
-			}
+        @Override
+        void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            startY = player.getY();
+            startPos = player.position();
+            ticks = 0;
 
-			ItemStack stack = player.getInventory().getItem(SOURCE_HOTBAR_SLOT);
-			if (stack.isEmpty() || !(stack.getItem() instanceof net.minecraft.world.item.BlockItem)) {
-				player.sendSystemMessage(Component.literal("Hotbar slot 6 doesn't have a placeable block in it."));
-				return true;
-			}
+            // Start holding forward and jump
+            options.keyUp.setDown(true);
+            options.keyJump.setDown(true);
+        }
 
-			int previousSlot = player.getInventory().getSelectedSlot();
-			player.getInventory().setSelectedSlot(SOURCE_HOTBAR_SLOT);
-			net.minecraft.client.Minecraft.getInstance().gameMode
-					.useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
-			player.getInventory().setSelectedSlot(previousSlot);
-			return true;
-		}
+        @Override
+        boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            ticks++;
 
-		@Override
-		String describe() {
-			return "place a block" + (lookedAtHit != null ? " where I'm looking" : " in front of me");
-		}
-	}
+            // Re-assert key down states each tick; vanilla's input loop can reset them
+            options.keyUp.setDown(true);
+
+            if (player.onGround() && ticks < 10) {
+                // Keep jump held while on the ground so the client processes the press
+                options.keyJump.setDown(true);
+            } else {
+                // Release jump key once airborne (or after initial attempt) to avoid continuous hopping
+                options.keyJump.setDown(false);
+            }
+
+            // Check if we've successfully gained altitude and landed
+            boolean gainedHeight = player.getY() >= startY + 0.8;
+            boolean movedForward = player.position().subtract(startPos).horizontalDistance() >= 0.8;
+            boolean landed = ticks > 5 && player.onGround(); 
+            boolean timedOut = ticks >= TIMEOUT_TICKS;
+
+            if ((landed && gainedHeight && movedForward) || timedOut) {
+                // Clean up input bindings
+                options.keyJump.setDown(false);
+                options.keyUp.setDown(false);
+
+                if (timedOut && !gainedHeight) {
+                    player.sendSystemMessage(Component.literal("Jump forward failed — wall blocked or missed ledge."));
+                }
+                return true;
+            }
+
+            return false; // Still in mid-air or executing jump
+        }
+
+        @Override
+        String describe() {
+            return "jump forward up 1 block";
+        }
+    }
+
+
+// Places one block. If the player is standing inside or too close to the 
+    // target block's bounding box, it automatically backs the player up first 
+    // until the space is clear before placing.
+    private class PlaceAction extends BuildAction {
+        private boolean backingUp = false;
+        private Vec3 startPos = null;
+        private static final int BACKUP_TIMEOUT_TICKS = 20; // 1 second safety cap
+        private int backupTicks = 0;
+
+        @Override
+        boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            BlockHitResult hitResult;
+            if (lookedAtHit != null) {
+                hitResult = lookedAtHit;
+                lookedAtHit = null; // one-shot: consumed here
+            } else {
+                BlockPos target = player.blockPosition().relative(player.getDirection(), 1);
+                hitResult = findClickableFace(level, target);
+                if (hitResult == null) {
+                    player.sendSystemMessage(Component.literal("No adjacent block to place " + target + " against."));
+                    cleanupBackup(options);
+                    return true;
+                }
+            }
+
+            BlockPos placeTarget = hitResult.getBlockPos().relative(hitResult.getDirection());
+
+            // 1. Check if the player bounding box overlaps the target block space
+            net.minecraft.world.phys.AABB targetBox = new net.minecraft.world.phys.AABB(placeTarget);
+            if (player.getBoundingBox().intersects(targetBox)) {
+                if (!backingUp) {
+                    backingUp = true;
+                    backupTicks = 0;
+                    startPos = player.position();
+                    options.keyDown.setDown(true); // Start moving backward
+                }
+
+                backupTicks++;
+                boolean timedOut = backupTicks >= BACKUP_TIMEOUT_TICKS;
+                boolean cleared = !player.getBoundingBox().intersects(targetBox);
+
+                if (!cleared && !timedOut) {
+                    return false; // Yield tick: still backing up to clear collision
+                }
+
+                // Stop moving backward once clear or timed out
+                cleanupBackup(options);
+
+                if (timedOut) {
+                    player.sendSystemMessage(Component.literal("Could not step back enough to clear place target."));
+                    return true;
+                }
+            } else if (backingUp) {
+                cleanupBackup(options);
+            }
+
+            // 2. Perform placement once space is clear
+            if (!level.getBlockState(placeTarget).canBeReplaced()) {
+                return true; // Already occupied — nothing to do
+            }
+
+            ItemStack stack = player.getInventory().getItem(SOURCE_HOTBAR_SLOT);
+            if (stack.isEmpty() || !(stack.getItem() instanceof net.minecraft.world.item.BlockItem)) {
+                player.sendSystemMessage(Component.literal("Hotbar slot 6 doesn't have a placeable block in it."));
+                return true;
+            }
+
+            int previousSlot = player.getInventory().getSelectedSlot();
+            player.getInventory().setSelectedSlot(SOURCE_HOTBAR_SLOT);
+            net.minecraft.client.Minecraft.getInstance().gameMode
+                    .useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
+            player.getInventory().setSelectedSlot(previousSlot);
+
+            return true;
+        }
+
+        private void cleanupBackup(net.minecraft.client.Options options) {
+            if (backingUp) {
+                options.keyDown.setDown(false);
+                backingUp = false;
+                startPos = null;
+                backupTicks = 0;
+            }
+        }
+
+        @Override
+        String describe() {
+            return "place a block" + (lookedAtHit != null ? " where I'm looking" : " in front of me");
+        }
+    }
 
 	// Breaks a block. If lookForPlace() was called just before this step,
 	// breaks whatever that raycast actually targeted. Otherwise falls back
