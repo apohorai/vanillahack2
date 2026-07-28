@@ -40,12 +40,15 @@ public class PohaVanillaModClient implements ClientModInitializer {
     // at your current Y-level.
     private KeyMapping placeKey;
 
-    // Bound to J: places and breaks a block 64 times in front of you automatically.
-    private KeyMapping placeBreak64Key;
+    // Bound to J: toggles infinite place-and-break loop in front of you.
+    private KeyMapping placeBreakKey;
 
     private java.util.List<BuildAction> sequence = null;
     private int sequenceIndex = -1;
     private boolean sequenceRunning = false;
+
+    // Tracks if the J-key place-and-break loop is running.
+    private boolean jLooping = false;
 
     // Pending shift-place state.
     private static final int SNEAK_WARMUP_TICKS = 10;
@@ -81,8 +84,8 @@ public class PohaVanillaModClient implements ClientModInitializer {
                 CATEGORY
         ));
 
-        placeBreak64Key = KeyMappingHelper.registerKeyMapping(new KeyMapping(
-                "key.poha.place_break_64",
+        placeBreakKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+                "key.poha.place_break_toggle",
                 InputConstants.Type.KEYSYM,
                 GLFW.GLFW_KEY_J,
                 CATEGORY
@@ -109,12 +112,18 @@ public class PohaVanillaModClient implements ClientModInitializer {
                 }
             }
 
-            while (placeBreak64Key.consumeClick()) {
-                if (sequenceRunning) {
+            while (placeBreakKey.consumeClick()) {
+                if (jLooping) {
+                    // Stop toggle requested
+                    jLooping = false;
+                    client.player.sendSystemMessage(Component.literal("Place-and-break loop stopping after current block..."));
+                } else if (sequenceRunning) {
                     client.player.sendSystemMessage(Component.literal("A sequence is already running!"));
                 } else {
+                    // Start toggle
+                    jLooping = true;
                     sequence = new java.util.ArrayList<>();
-                    sequence.add(new PlaceAndBreakRepeatAction(64));
+                    sequence.add(new PlaceAndBreakLoopAction());
                     sequenceIndex = 0;
                     sequenceRunning = true;
                     sequence.get(0).begin(client.player, client.player.level(), client.options);
@@ -393,7 +402,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
             boolean gainedHeight = player.getY() >= startY + 0.8;
             boolean movedForward = player.position().subtract(startPos).horizontalDistance() >= 0.8;
-            boolean landed = ticks > 5 && player.onGround(); 
+            boolean landed = ticks > 5 && player.onGround();
             boolean timedOut = ticks >= TIMEOUT_TICKS;
 
             if ((landed && gainedHeight && movedForward) || timedOut) {
@@ -500,6 +509,11 @@ public class PohaVanillaModClient implements ClientModInitializer {
         }
     }
 
+    // Breaks a block. Only requires a matching tool if the block actually
+    // needs one to drop anything (e.g. ores). Otherwise, prefers a Silk
+    // Touch tool if one's available (glass et al. need Silk Touch — any
+    // tier — to drop at all, even though no tier is strictly "required"),
+    // and falls back to whatever's currently selected if not.
     private class BreakAction extends BuildAction {
         BlockPos target;
 
@@ -521,14 +535,19 @@ public class PohaVanillaModClient implements ClientModInitializer {
                 return true;
             }
 
+            net.minecraft.world.level.block.state.BlockState state = level.getBlockState(target);
             int toolSlot = -1;
             for (int i = 0; i < 9; i++) {
                 ItemStack stack = player.getInventory().getItem(i);
-                if (!stack.isEmpty() && stack.isCorrectToolForDrops(level.getBlockState(target))) {
+                if (!stack.isEmpty() && stack.isCorrectToolForDrops(state)) {
                     toolSlot = i;
                     break;
                 }
             }
+            if (toolSlot == -1 && !state.requiresCorrectToolForDrops()) {
+                toolSlot = findSilkTouchSlot(player);
+            }
+
             int previousSlot = player.getInventory().getSelectedSlot();
             if (toolSlot != -1) {
                 player.getInventory().setSelectedSlot(toolSlot);
@@ -544,37 +563,35 @@ public class PohaVanillaModClient implements ClientModInitializer {
         }
     }
 
-    private class PlaceAndBreakRepeatAction extends BuildAction {
-        private final int targetCycles;
-        private int completedCycles = 0;
-
+    // Toggleable action that continuously places and mines a block directly
+    // in front of the player until jLooping is set to false or materials run out.
+    private class PlaceAndBreakLoopAction extends BuildAction {
         private enum Stage { PLACE, MINE }
         private Stage currentStage = Stage.PLACE;
 
         private BlockPos targetPos;
         private int previousSlot;
-
-        PlaceAndBreakRepeatAction(int targetCycles) {
-            this.targetCycles = targetCycles;
-        }
+        private int totalCycles = 0;
 
         @Override
         void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-            completedCycles = 0;
             currentStage = Stage.PLACE;
-            player.sendSystemMessage(Component.literal("Starting " + targetCycles + "x place-and-break cycle..."));
+            totalCycles = 0;
+            player.sendSystemMessage(Component.literal("Place-and-break loop started. Press J again to stop."));
         }
 
         @Override
         boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-            if (completedCycles >= targetCycles) {
-                player.sendSystemMessage(Component.literal("Completed " + targetCycles + " cycles!"));
-                return true;
-            }
-
             switch (currentStage) {
                 case PLACE:
+                    // Check toggle status before starting a new cycle
+                    if (!jLooping) {
+                        player.sendSystemMessage(Component.literal("Loop stopped. Completed " + totalCycles + " cycle(s)."));
+                        return true;
+                    }
+
                     if (!executePlace(player, level)) {
+                        jLooping = false; // Stop loop on failure (out of blocks, etc.)
                         return true;
                     }
                     currentStage = Stage.MINE;
@@ -587,7 +604,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
                         net.minecraft.client.Minecraft.getInstance().gameMode.stopDestroyBlock();
                         player.getInventory().setSelectedSlot(previousSlot);
 
-                        completedCycles++;
+                        totalCycles++;
                         currentStage = Stage.PLACE;
                     } else {
                         net.minecraft.client.Minecraft.getInstance().gameMode
@@ -632,19 +649,26 @@ public class PohaVanillaModClient implements ClientModInitializer {
             return true;
         }
 
+        // Same fix as BreakAction: only require a correct-tier tool if the
+        // block actually needs one; otherwise prefer Silk Touch if we have
+        // it, so this doesn't misreport things like glass as unbreakable.
         private int findBestTool(LocalPlayer player, Level level, BlockPos pos) {
+            net.minecraft.world.level.block.state.BlockState state = level.getBlockState(pos);
             for (int i = 0; i < 9; i++) {
                 ItemStack stack = player.getInventory().getItem(i);
-                if (!stack.isEmpty() && stack.isCorrectToolForDrops(level.getBlockState(pos))) {
+                if (!stack.isEmpty() && stack.isCorrectToolForDrops(state)) {
                     return i;
                 }
+            }
+            if (!state.requiresCorrectToolForDrops()) {
+                return findSilkTouchSlot(player);
             }
             return -1;
         }
 
         @Override
         String describe() {
-            return "place and break block " + targetCycles + " times";
+            return "place and break loop";
         }
     }
 
@@ -666,6 +690,28 @@ public class PohaVanillaModClient implements ClientModInitializer {
         Vec3 hitVec = Vec3.atCenterOf(clickedPos).add(
                 clickedFace.getStepX() * 0.5, clickedFace.getStepY() * 0.5, clickedFace.getStepZ() * 0.5);
         return new BlockHitResult(hitVec, clickedFace, clickedPos, false);
+    }
+
+    // Finds a hotbar item enchanted with Silk Touch — enchantments are
+    // registry-driven data as of 1.20.5+, so this needs a Holder looked up
+    // through the level's registry access rather than a plain constant.
+    private int findSilkTouchSlot(LocalPlayer player) {
+        net.minecraft.core.Holder<net.minecraft.world.item.enchantment.Enchantment> silkTouch;
+        try {
+            silkTouch = player.level().registryAccess()
+                    .lookupOrThrow(net.minecraft.core.registries.Registries.ENCHANTMENT)
+                    .getOrThrow(net.minecraft.world.item.enchantment.Enchantments.SILK_TOUCH);
+        } catch (Exception e) {
+            return -1; // registry lookup failed for some reason — just skip the preference
+        }
+
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (!stack.isEmpty() && stack.getEnchantments().getLevel(silkTouch) > 0) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private void beginOffsetPlacement(LocalPlayer player, KeyMapping sneakKey) {
@@ -721,42 +767,71 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
         sneakKey.setDown(pendingWasSneaking);
 
+        // Immediately start mining the block we just placed. Only search for
+        // (and require) a specific tool if this block actually needs one to
+        // drop anything — e.g. ores need the right pickaxe tier. Plenty of
+        // blocks (glass, dirt, wood, ...) don't require any particular tool
+        // at all: isCorrectToolForDrops() would return false for ALL of them
+        // in that case (since none is "the" required tool), which isn't the
+        // same as "unbreakable" — so we shouldn't refuse to mine there.
         BlockPos placedPos = pendingClickPos.relative(pendingClickFace);
         Level level = player.level();
+        net.minecraft.world.level.block.state.BlockState placedState = level.getBlockState(placedPos);
+
         int pickaxeSlot = -1;
         for (int i = 0; i < 9; i++) {
             ItemStack stack = player.getInventory().getItem(i);
-            if (!stack.isEmpty() && stack.isCorrectToolForDrops(level.getBlockState(placedPos))) {
+            if (!stack.isEmpty() && stack.isCorrectToolForDrops(placedState)) {
                 pickaxeSlot = i;
                 break;
             }
         }
 
-        if (pickaxeSlot == -1) {
+        if (pickaxeSlot == -1 && placedState.requiresCorrectToolForDrops()) {
+            // Genuinely needs a specific tool (like an ore) and we don't have
+            // one — this is a real "can't do this" case.
             player.sendSystemMessage(Component.literal("Placed it, but you don't have a pickaxe to break it with."));
             player.getInventory().setSelectedSlot(pendingPreviousSlot);
             looping = false;
             return;
         }
 
-        ItemStack toolStack = player.getInventory().getItem(pickaxeSlot);
-        if (toolStack.isDamageableItem()) {
-            int maxDamage = toolStack.getMaxDamage();
-            int damage = toolStack.getDamageValue();
-            double remainingFraction = maxDamage > 0 ? 1.0 - (damage / (double) maxDamage) : 1.0;
-            if (remainingFraction < 0.8) {
-                player.sendSystemMessage(Component.literal(
-                        "Placed it, but your tool is below 80% durability (" +
-                                Math.round(remainingFraction * 100) + "%) — stopping the loop."));
-                player.getInventory().setSelectedSlot(pendingPreviousSlot);
-                looping = false;
-                return;
+        if (pickaxeSlot == -1) {
+            // Block doesn't require a specific tool tier — but some blocks
+            // (glass being the classic case) still drop nothing at all
+            // unless mined with Silk Touch. Prefer a Silk Touch tool if we
+            // have one, rather than just grabbing whatever's selected.
+            int silkTouchSlot = findSilkTouchSlot(player);
+            if (silkTouchSlot != -1) {
+                pickaxeSlot = silkTouchSlot;
             }
         }
 
+        if (pickaxeSlot != -1) {
+            // Stop before grinding the tool down further if it's already
+            // below 20% durability remaining.
+            ItemStack toolStack = player.getInventory().getItem(pickaxeSlot);
+            if (toolStack.isDamageableItem()) {
+                int maxDamage = toolStack.getMaxDamage();
+                int damage = toolStack.getDamageValue();
+                double remainingFraction = maxDamage > 0 ? 1.0 - (damage / (double) maxDamage) : 1.0;
+                if (remainingFraction < 0.2) {
+                    player.sendSystemMessage(Component.literal(
+                            "Placed it, but your tool is below 20% durability (" +
+                                    Math.round(remainingFraction * 100) + "%) — stopping the loop."));
+                    player.getInventory().setSelectedSlot(pendingPreviousSlot);
+                    looping = false;
+                    return;
+                }
+            }
+            player.getInventory().setSelectedSlot(pickaxeSlot);
+        }
+        // else: no specific tool needed and no Silk Touch tool found — mine
+        // with whatever's currently selected (or bare hands); it'll break,
+        // it just may not drop anything, same as a real player punching it.
+
         miningPos = placedPos;
         miningPreviousSlot = pendingPreviousSlot;
-        player.getInventory().setSelectedSlot(pickaxeSlot);
         net.minecraft.client.Minecraft.getInstance().gameMode.startDestroyBlock(miningPos, Direction.UP);
         mining = true;
     }
@@ -765,6 +840,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
         Level level = player.level();
 
         if (level.getBlockState(miningPos).isAir()) {
+            // Done — the block broke since the last tick.
             net.minecraft.client.Minecraft.getInstance().gameMode.stopDestroyBlock();
             player.getInventory().setSelectedSlot(miningPreviousSlot);
             mining = false;
@@ -778,6 +854,8 @@ public class PohaVanillaModClient implements ClientModInitializer {
         boolean stillOnTarget = net.minecraft.client.Minecraft.getInstance().gameMode
                 .continueDestroyBlock(miningPos, Direction.UP);
         if (!stillOnTarget) {
+            // Target/tool changed underneath us for some reason; restart the
+            // break rather than leaving it stuck.
             net.minecraft.client.Minecraft.getInstance().gameMode.startDestroyBlock(miningPos, Direction.UP);
         }
     }
