@@ -47,6 +47,14 @@ public class PohaVanillaModClient implements ClientModInitializer {
     private int sequenceIndex = -1;
     private boolean sequenceRunning = false;
 
+    // Toggled by K. Off (default) = today's step-and-wait troubleshooting
+    // behavior, one G press per step. On = G runs the whole sequence
+    // continuously; a second G press while running requests a graceful stop
+    // after the *current* step finishes, rather than an abrupt cut-off.
+    private boolean sequenceAutoRun = false;
+    private boolean sequenceStopRequested = false;
+    private KeyMapping autoRunToggleKey;
+
     // Tracks if the J-key place-and-break loop is running.
     private boolean jLooping = false;
 
@@ -91,24 +99,69 @@ public class PohaVanillaModClient implements ClientModInitializer {
                 CATEGORY
         ));
 
+        autoRunToggleKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+                "key.poha.toggle_auto_run",
+                InputConstants.Type.KEYSYM,
+                GLFW.GLFW_KEY_K,
+                CATEGORY
+        ));
+
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player == null) return;
 
             while (sequenceKey.consumeClick()) {
-                if (sequence == null) {
+                if (sequence != null) {
+                    if (sequenceAutoRun) {
+                        client.player.sendSystemMessage(Component.literal(
+                                "Auto-run (K) is already active — press K to stop it first."));
+                    } else if (!sequenceRunning) {
+                        BuildAction action = sequence.get(sequenceIndex);
+                        action.begin(client.player, client.player.level(), client.options);
+                        sequenceRunning = true;
+                    }
+                    // else: mid-step already, ignore extra presses.
+                } else {
                     sequence = buildSequence();
                     sequenceIndex = 0;
                     sequenceRunning = false;
+                    sequenceStopRequested = false;
+                    sequenceAutoRun = false;
                     if (sequence.isEmpty()) {
                         client.player.sendSystemMessage(Component.literal("buildSequence() is empty — nothing to run."));
                         sequence = null;
                     } else {
                         client.player.sendSystemMessage(Component.literal("Next: " + sequence.get(0).describe()));
                     }
-                } else if (!sequenceRunning) {
-                    BuildAction action = sequence.get(sequenceIndex);
-                    action.begin(client.player, client.player.level(), client.options);
-                    sequenceRunning = true;
+                }
+            }
+
+            // K: starts and stops a fully continuous run of buildSequence()
+            // by itself — no G press needed at all. Second press requests a
+            // graceful stop after the current step finishes, same reasoning
+            // as everywhere else: never cut a step off mid-action with keys
+            // still held down.
+            while (autoRunToggleKey.consumeClick()) {
+                if (sequenceAutoRun) {
+                    sequenceStopRequested = true;
+                    client.player.sendSystemMessage(Component.literal("Stopping after the current step..."));
+                } else if (sequence != null) {
+                    client.player.sendSystemMessage(Component.literal(
+                            "A sequence is already running via G — finish that first."));
+                } else {
+                    sequence = buildSequence();
+                    sequenceIndex = 0;
+                    sequenceStopRequested = false;
+                    if (sequence.isEmpty()) {
+                        client.player.sendSystemMessage(Component.literal("buildSequence() is empty — nothing to run."));
+                        sequence = null;
+                    } else {
+                        sequenceAutoRun = true;
+                        client.player.sendSystemMessage(Component.literal(
+                                "Auto-run started — looping the sequence continuously. Press K again to stop."));
+                        BuildAction first = sequence.get(0);
+                        first.begin(client.player, client.player.level(), client.options);
+                        sequenceRunning = true;
+                    }
                 }
             }
 
@@ -160,9 +213,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
 
         steps.add(lookForPlace());
-        // Runs automatically as part of this sequence — no J press needed,
-        // stops on its own after 5 cycles (or sooner if out of material).
-        steps.add(placeAndBreakLoop(2));
+        steps.add(placeAndBreakLoop(50));
         steps.add(moveForward(1));
         steps.add(moveBack(1));
 
@@ -202,12 +253,44 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
         sequenceRunning = false;
         sequenceIndex++;
+
         if (sequenceIndex >= sequence.size()) {
-            player.sendSystemMessage(Component.literal("Sequence complete!"));
+            if (sequenceAutoRun && !sequenceStopRequested) {
+                // K's continuous run: loop back to the start instead of
+                // stopping, and keep going until K requests a stop.
+                player.sendSystemMessage(Component.literal("Sequence complete — looping back to the start."));
+                sequenceIndex = 0;
+                sequence.get(0).begin(player, level, options);
+                sequenceRunning = true;
+                return;
+            }
+            player.sendSystemMessage(Component.literal(
+                    sequenceStopRequested ? "Stopped after completing the sequence." : "Sequence complete!"));
             sequence = null;
             sequenceIndex = -1;
-        } else {
-            player.sendSystemMessage(Component.literal("Next: " + sequence.get(sequenceIndex).describe()));
+            sequenceStopRequested = false;
+            sequenceAutoRun = false;
+            return;
+        }
+
+        if (sequenceStopRequested) {
+            player.sendSystemMessage(Component.literal(
+                    "Stopped. " + (sequence.size() - sequenceIndex) + " step(s) remaining."));
+            sequence = null;
+            sequenceIndex = -1;
+            sequenceStopRequested = false;
+            sequenceAutoRun = false;
+            return;
+        }
+
+        BuildAction next = sequence.get(sequenceIndex);
+        player.sendSystemMessage(Component.literal("Next: " + next.describe()));
+
+        if (sequenceAutoRun) {
+            // Keep going automatically — begin the next step right away
+            // instead of waiting for another G press.
+            next.begin(player, level, options);
+            sequenceRunning = true;
         }
     }
 
