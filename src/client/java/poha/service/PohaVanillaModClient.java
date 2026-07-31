@@ -122,11 +122,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
                 } else {
                     // Start toggle
                     jLooping = true;
-                    sequence = new java.util.ArrayList<>();
-                    sequence.add(new PlaceAndBreakLoopAction());
-                    sequenceIndex = 0;
-                    sequenceRunning = true;
-                    sequence.get(0).begin(client.player, client.player.level(), client.options);
+                    runSingleAction(placeAndBreakLoop(-1), client.player, client.player.level(), client.options);
                 }
             }
 
@@ -164,12 +160,11 @@ public class PohaVanillaModClient implements ClientModInitializer {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
 
         steps.add(lookForPlace());
-        steps.add(place());
-        steps.add(turnRight());
+        // Runs automatically as part of this sequence — no J press needed,
+        // stops on its own after 5 cycles (or sooner if out of material).
+        steps.add(placeAndBreakLoop(2));
         steps.add(moveForward(1));
-        steps.add(lookForPlace());
-        steps.add(place());
-        steps.add(jumpForward());
+        steps.add(moveBack(1));
 
         return steps;
     }
@@ -185,8 +180,20 @@ public class PohaVanillaModClient implements ClientModInitializer {
     private BuildAction breakBlock()            { return new BreakAction(); }
     private BuildAction lookForPlace()         { return new LookForPlaceAction(); }
     private BuildAction jumpForward()          { return new JumpForwardAction(); }
+    private BuildAction placeAndBreakLoop(int cycles) { return new PlaceAndBreakLoopAction(cycles); }
 
     private BlockHitResult lookedAtHit = null;
+
+    // Runs a single BuildAction through the same sequence machinery G uses,
+    // as a one-step "sequence". Used by the J-key toggle so it doesn't need
+    // its own separate execution path.
+    private void runSingleAction(BuildAction action, LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        sequence = new java.util.ArrayList<>();
+        sequence.add(action);
+        sequenceIndex = 0;
+        sequenceRunning = true;
+        action.begin(player, level, options);
+    }
 
     private void tickSequence(LocalPlayer player, Level level, net.minecraft.client.Options options) {
         BuildAction action = sequence.get(sequenceIndex);
@@ -565,28 +572,46 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
     // Toggleable action that continuously places and mines a block directly
     // in front of the player until jLooping is set to false or materials run out.
+    // targetCycles < 0 means "run until jLooping goes false" (the J-key
+    // toggle case — needs an external stop signal). targetCycles >= 0 means
+    // "run exactly that many cycles, then stop on its own" — fully
+    // self-contained, safe to drop into buildSequence() with no key press
+    // involved at all.
     private class PlaceAndBreakLoopAction extends BuildAction {
         private enum Stage { PLACE, MINE }
         private Stage currentStage = Stage.PLACE;
 
+        private final int targetCycles;
         private BlockPos targetPos;
         private int previousSlot;
         private int totalCycles = 0;
+
+        PlaceAndBreakLoopAction(int targetCycles) {
+            this.targetCycles = targetCycles;
+        }
 
         @Override
         void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
             currentStage = Stage.PLACE;
             totalCycles = 0;
-            player.sendSystemMessage(Component.literal("Place-and-break loop started. Press J again to stop."));
+            if (targetCycles < 0) {
+                player.sendSystemMessage(Component.literal("Place-and-break loop started. Press J again to stop."));
+            } else {
+                player.sendSystemMessage(Component.literal(
+                        "Placing and breaking " + targetCycles + " block(s) automatically."));
+            }
         }
 
         @Override
         boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
             switch (currentStage) {
                 case PLACE:
-                    // Check toggle status before starting a new cycle
-                    if (!jLooping) {
-                        player.sendSystemMessage(Component.literal("Loop stopped. Completed " + totalCycles + " cycle(s)."));
+                    boolean shouldStop = targetCycles < 0 ? !jLooping : totalCycles >= targetCycles;
+                    if (shouldStop) {
+                        player.sendSystemMessage(Component.literal("Done. Completed " + totalCycles + " cycle(s)."));
+                        if (targetCycles < 0) {
+                            jLooping = false; // tidy up the external flag if it drove this
+                        }
                         return true;
                     }
 
