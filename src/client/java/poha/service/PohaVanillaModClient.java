@@ -30,14 +30,10 @@ public class PohaVanillaModClient implements ClientModInitializer {
     private static final KeyMapping.Category CATEGORY =
             KeyMapping.Category.register(PohaVanillaMod.id("movement"));
 
-    // Bound to G: steps through the hardcoded sequence of build primitives
-    // you write yourself in buildSequence() below. One press announces the
-    // next step, the next press runs it.
+    // Bound to G: steps through the hardcoded sequence of build primitives.
     private KeyMapping sequenceKey;
 
-    // Bound to H. Prints your current position, then shift-places
-    // prismarine 1 block in front of you and 2 blocks to your left,
-    // at your current Y-level.
+    // Bound to H. Prints current position and places offset prismarine.
     private KeyMapping placeKey;
 
     // Bound to J: toggles infinite place-and-break loop in front of you.
@@ -47,19 +43,16 @@ public class PohaVanillaModClient implements ClientModInitializer {
     private int sequenceIndex = -1;
     private boolean sequenceRunning = false;
 
-    // Toggled by K. Off (default) = today's step-and-wait troubleshooting
-    // behavior, one G press per step. On = G runs the whole sequence
-    // continuously; a second G press while running requests a graceful stop
-    // after the *current* step finishes, rather than an abrupt cut-off.
+    // Toggled by K. Continuous auto-run sequence execution.
     private boolean sequenceAutoRun = false;
     private boolean sequenceStopRequested = false;
     private KeyMapping autoRunToggleKey;
 
-    // Set by any action (e.g. tool durability dropping too low) to force an
-    // immediate full stop of the sequence/loop, regardless of how it was
-    // triggered (G, K, or J) — as opposed to sequenceStopRequested, which is
-    // a graceful "finish this step then stop" request from the player.
+    // Set by any action to force an immediate full stop.
     private boolean sequenceAbortRequested = false;
+
+    // 1-2 tick settling delay between auto-run steps to allow physics & keys to clear.
+    private int autoRunDelayTicks = 0;
 
     // Tracks if the J-key place-and-break loop is running.
     private boolean jLooping = false;
@@ -120,18 +113,18 @@ public class PohaVanillaModClient implements ClientModInitializer {
                     if (sequenceAutoRun) {
                         client.player.sendSystemMessage(Component.literal(
                                 "Auto-run (K) is already active — press K to stop it first."));
-                    } else if (!sequenceRunning) {
+                    } else if (!sequenceRunning && autoRunDelayTicks == 0) {
                         BuildAction action = sequence.get(sequenceIndex);
                         action.begin(client.player, client.player.level(), client.options);
                         sequenceRunning = true;
                     }
-                    // else: mid-step already, ignore extra presses.
                 } else {
                     sequence = buildSequence();
                     sequenceIndex = 0;
                     sequenceRunning = false;
                     sequenceStopRequested = false;
                     sequenceAutoRun = false;
+                    autoRunDelayTicks = 0;
                     if (sequence.isEmpty()) {
                         client.player.sendSystemMessage(Component.literal("buildSequence() is empty — nothing to run."));
                         sequence = null;
@@ -141,11 +134,6 @@ public class PohaVanillaModClient implements ClientModInitializer {
                 }
             }
 
-            // K: starts and stops a fully continuous run of buildSequence()
-            // by itself — no G press needed at all. Second press requests a
-            // graceful stop after the current step finishes, same reasoning
-            // as everywhere else: never cut a step off mid-action with keys
-            // still held down.
             while (autoRunToggleKey.consumeClick()) {
                 if (sequenceAutoRun) {
                     sequenceStopRequested = true;
@@ -157,6 +145,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
                     sequence = buildSequence();
                     sequenceIndex = 0;
                     sequenceStopRequested = false;
+                    autoRunDelayTicks = 0;
                     if (sequence.isEmpty()) {
                         client.player.sendSystemMessage(Component.literal("buildSequence() is empty — nothing to run."));
                         sequence = null;
@@ -173,19 +162,17 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
             while (placeBreakKey.consumeClick()) {
                 if (jLooping) {
-                    // Stop toggle requested
                     jLooping = false;
                     client.player.sendSystemMessage(Component.literal("Place-and-break loop stopping after current block..."));
                 } else if (sequenceRunning) {
                     client.player.sendSystemMessage(Component.literal("A sequence is already running!"));
                 } else {
-                    // Start toggle
                     jLooping = true;
                     runSingleAction(placeAndBreakLoop(-1), client.player, client.player.level(), client.options);
                 }
             }
 
-            if (sequence != null && sequenceRunning) {
+            if (sequence != null) {
                 tickSequence(client.player, client.player.level(), client.options);
             }
 
@@ -212,152 +199,139 @@ public class PohaVanillaModClient implements ClientModInitializer {
         });
     }
 
-    // Hotbar is 0-indexed internally; slot 6 is index 5.
     private static final int SOURCE_HOTBAR_SLOT = 5;
 
     private java.util.List<BuildAction> buildSequence() {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
-steps.add(lookForPlace());
-    steps.add(place());
 
-    steps.add(turnLeft());
-    steps.add(turnRight());
+        steps.add(lookForPlace());
+        steps.add(place());
 
+        steps.add(turnLeft());
+        steps.add(turnRight());
 
-    steps.add(moveLeft(1));
-    steps.add(lookForPlace());
-    steps.add(place());
-    
-    steps.add(moveLeft(1));
-    steps.add(lookForPlace());
-    steps.add(place());
+        steps.add(moveLeft(1));
+        steps.add(lookForPlace());
+        steps.add(place());
 
-    steps.add(moveRight(3));
-    steps.add(lookForPlace());
-    steps.add(place());
+        steps.add(moveLeft(1));
+        steps.add(lookForPlace());
+        steps.add(place());
 
-    steps.add(moveRight(1));
-    steps.add(lookForPlace());
-    steps.add(place());
+        steps.add(moveRight(3));
+        steps.add(lookForPlace());
+        steps.add(place());
 
-    steps.add(moveLeft(2));
-    
+        steps.add(moveRight(1));
+        steps.add(lookForPlace());
+        steps.add(place());
 
-    steps.add(lookForPlace());
-    steps.add(jumpForward());
-    steps.add(centerAndAlign());
-    //end of bottom
+        steps.add(moveLeft(2));
 
-    steps.add(turnLeft());
-    steps.add(moveForward(1));
-    steps.add(lookForPlace());
-    steps.add(place());
-    
-    steps.add(lookDown());
-    steps.add(jumpAndPlace());
-    steps.add(lookForPlaceFront());
-    steps.add(place());
+        steps.add(lookForPlace());
+        steps.add(jumpForward());
+        steps.add(centerAndAlign());
 
-    steps.add(lookDown());
-    steps.add(jumpAndPlace());
-    steps.add(lookForPlaceFront());
-    steps.add(place());
+        steps.add(turnLeft());
+        steps.add(moveForward(1));
+        steps.add(lookForPlace());
+        steps.add(place());
 
+        steps.add(lookDown());
+        steps.add(jumpAndPlace());
+        steps.add(lookForPlaceFront());
+        steps.add(place());
 
+        steps.add(lookDown());
+        steps.add(jumpAndPlace());
+        steps.add(lookForPlaceFront());
+        steps.add(place());
 
-    steps.add(lookForPlaceUp());
-    steps.add(place());
-    steps.add(lookDown());
-    steps.add(breakBelow());
-    steps.add(breakBelow());
-    //end of pillar left
-    steps.add(centerAndAlign());
-    steps.add(moveBack(1));
+        steps.add(lookForPlaceUp());
+        steps.add(place());
+        steps.add(lookDown());
+        steps.add(breakBelow());
+        steps.add(breakBelow());
 
-    
-    steps.add(lookDown());
-    steps.add(jumpAndPlace());
+        steps.add(centerAndAlign());
+        steps.add(moveBack(1));
 
+        steps.add(lookDown());
+        steps.add(jumpAndPlace());
 
-    steps.add(lookDown());
-    steps.add(jumpAndPlace());
+        steps.add(lookDown());
+        steps.add(jumpAndPlace());
 
+        steps.add(lookForPlaceUp());
+        steps.add(place());
+        steps.add(lookDown());
+        steps.add(breakBelow());
+        steps.add(breakBelow());
 
-    steps.add(lookForPlaceUp());
-    steps.add(place());
-    steps.add(lookDown());
-    steps.add(breakBelow());
-    steps.add(breakBelow());
- // end of 2nd left top
-       steps.add(centerAndAlign());
-    steps.add(moveBack(1));
+        steps.add(centerAndAlign());
+        steps.add(moveBack(1));
 
-    
-    steps.add(lookDown());
-    steps.add(jumpAndPlace());
+        steps.add(lookDown());
+        steps.add(jumpAndPlace());
 
+        steps.add(lookDown());
+        steps.add(jumpAndPlace());
 
-    steps.add(lookDown());
-    steps.add(jumpAndPlace());
+        steps.add(lookForPlaceUp());
+        steps.add(place());
+        steps.add(lookDown());
+        steps.add(breakBelow());
+        steps.add(breakBelow());
 
+        steps.add(centerAndAlign());
+        steps.add(moveBack(1));
 
-    steps.add(lookForPlaceUp());
-    steps.add(place());
-    steps.add(lookDown());
-    steps.add(breakBelow());
-    steps.add(breakBelow());
- // end of 3rd left top
-     steps.add(centerAndAlign());
-    steps.add(moveBack(1));
+        steps.add(lookDown());
+        steps.add(jumpAndPlace());
 
-    
-    steps.add(lookDown());
-    steps.add(jumpAndPlace());
+        steps.add(lookDown());
+        steps.add(jumpAndPlace());
 
+        steps.add(lookForPlaceUp());
+        steps.add(place());
 
-    steps.add(lookDown());
-    steps.add(jumpAndPlace());
+        steps.add(lookDown());
+        steps.add(breakBelow());
+        steps.add(centerAndAlign());
+        steps.add(lookUp());
+        steps.add(place());
+        steps.add(breakBelow());
 
+        steps.add(turnRight());
+        steps.add(turnRight());
+        steps.add(moveBack(1));
+        steps.add(lookDown());
+        steps.add(jumpAndPlace());
 
-    steps.add(lookForPlaceUp());
-    steps.add(place());
+        steps.add(centerAndAlign());
+        steps.add(lookForPlaceUp());
+        steps.add(place());
 
-    steps.add(lookDown());
-    steps.add(breakBelow());
-    steps.add(centerAndAlign());
-    steps.add(lookUp());
-    steps.add(place());
-    steps.add(breakBelow());
-// end of 4th left top
+        steps.add(lookDown());
+        steps.add(breakBelow());
+        steps.add(lookForPlace());
+        steps.add(centerAndAlign());
+        steps.add(lookForPlaceUp());
+        steps.add(place());
 
-
-    steps.add(turnRight());
-    steps.add(turnRight());
-    steps.add(moveBack(1));
-    steps.add(lookDown());
-    steps.add(jumpAndPlace());
-
-    steps.add(centerAndAlign());
-    steps.add(lookForPlaceUp());
-    steps.add(place());
-    
-    steps.add(lookDown());
-    steps.add(breakBelow());
-    steps.add(lookForPlace());
-    steps.add(centerAndAlign());
-    steps.add(lookForPlaceUp());
-    steps.add(place());
-    
-    steps.add(lookForPlace());
-    steps.add(place());
-
-
-
-
+        steps.add(lookForPlace());
+        steps.add(place());
+        steps.add(moveBack(1));
+        steps.add(centerAndAlign());
+        steps.add(turnLeft());
+        steps.add(moveBack(1));
+        steps.add(lookDown());
+        steps.add(moveBack(1));
+        steps.add(lookForPlace());
+        steps.add(centerAndAlign());
         return steps;
     }
 
-    // --- Primitive helpers ---
     private BuildAction moveForward(int blocks) { return new MoveAction(MoveDir.FORWARD, blocks); }
     private BuildAction moveBack(int blocks)    { return new MoveAction(MoveDir.BACK, blocks); }
     private BuildAction moveLeft(int blocks)    { return new MoveAction(MoveDir.LEFT, blocks); }
@@ -368,26 +342,21 @@ steps.add(lookForPlace());
     private BuildAction breakBlock()            { return new BreakAction(false); }
     private BuildAction breakBelow()            { return new BreakAction(true); }
 
-    // Look actions targeting 1 block in front + direction
     private BuildAction lookForPlaceFront()    { return new LookForPlaceAction(LookTarget.FRONT); }
     private BuildAction lookForPlaceDown()     { return new LookForPlaceAction(LookTarget.DOWN); }
     private BuildAction lookForPlaceUp()       { return new LookForPlaceAction(LookTarget.UP); }
     private BuildAction lookForPlace()         { return lookForPlaceFront(); }
 
-    // Direct look down action (straight down at current feet position)
     private BuildAction lookDown()             { return new LookForPlaceAction(LookTarget.DOWN_SELF); }
 
     private BuildAction jumpForward()          { return new JumpForwardAction(); }
     private BuildAction jumpAndPlace()         { return new JumpAndPlaceAction(); }
     private BuildAction placeAndBreakLoop(int cycles) { return new PlaceAndBreakLoopAction(cycles); }
-    private BuildAction centerAndAlign() { return new PositionAction(); }
-    private BuildAction lookUp() { return new LookForPlaceAction(LookTarget.UP_SELF); }
+    private BuildAction centerAndAlign()       { return new PositionAction(); }
+    private BuildAction lookUp()               { return new LookForPlaceAction(LookTarget.UP_SELF); }
 
     private BlockHitResult lookedAtHit = null;
 
-    // Runs a single BuildAction through the same sequence machinery G uses,
-    // as a one-step "sequence". Used by the J-key toggle so it doesn't need
-    // its own separate execution path.
     private void runSingleAction(BuildAction action, LocalPlayer player, Level level, net.minecraft.client.Options options) {
         sequence = new java.util.ArrayList<>();
         sequence.add(action);
@@ -397,10 +366,27 @@ steps.add(lookForPlace());
     }
 
     private void tickSequence(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        // Handle inter-step settling delay during auto-run or sequence loops
+        if (autoRunDelayTicks > 0) {
+            autoRunDelayTicks--;
+            if (autoRunDelayTicks == 0 && sequenceIndex < sequence.size()) {
+                BuildAction next = sequence.get(sequenceIndex);
+                player.sendSystemMessage(Component.literal("Next: " + next.describe()));
+                next.begin(player, level, options);
+                sequenceRunning = true;
+            }
+            return;
+        }
+
+        if (!sequenceRunning || sequenceIndex < 0 || sequenceIndex >= sequence.size()) {
+            return;
+        }
+
         BuildAction action = sequence.get(sequenceIndex);
         boolean done = action.tick(player, level, options);
 
         if (sequenceAbortRequested) {
+            action.end(player, level, options);
             player.sendSystemMessage(Component.literal("Sequence stopped."));
             sequence = null;
             sequenceIndex = -1;
@@ -414,17 +400,17 @@ steps.add(lookForPlace());
 
         if (!done) return;
 
+        // Clean up the completed action's keys/momentum before moving to next step
+        action.end(player, level, options);
         sequenceRunning = false;
         sequenceIndex++;
 
         if (sequenceIndex >= sequence.size()) {
             if (sequenceAutoRun && !sequenceStopRequested) {
-                // K's continuous run: loop back to the start instead of
-                // stopping, and keep going until K requests a stop.
                 player.sendSystemMessage(Component.literal("Sequence complete — looping back to the start."));
                 sequenceIndex = 0;
-                sequence.get(0).begin(player, level, options);
-                sequenceRunning = true;
+                // Give 2 ticks for ground physics to settle before starting from step 0
+                autoRunDelayTicks = 2;
                 return;
             }
             player.sendSystemMessage(Component.literal(
@@ -446,95 +432,97 @@ steps.add(lookForPlace());
             return;
         }
 
-        BuildAction next = sequence.get(sequenceIndex);
-        player.sendSystemMessage(Component.literal("Next: " + next.describe()));
-
         if (sequenceAutoRun) {
-            // Keep going automatically — begin the next step right away
-            // instead of waiting for another G press.
-            next.begin(player, level, options);
-            sequenceRunning = true;
+            // Wait 1 tick for physics and key binds to settle before starting next step
+            autoRunDelayTicks = 1;
+        } else {
+            BuildAction next = sequence.get(sequenceIndex);
+            player.sendSystemMessage(Component.literal("Next: " + next.describe()));
         }
     }
 
     private abstract static class BuildAction {
         void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {}
         abstract boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options);
+        
+        // Guarantees input keys are released and residual horizontal velocity is killed upon completion/abort
+        void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            options.keyUp.setDown(false);
+            options.keyDown.setDown(false);
+            options.keyLeft.setDown(false);
+            options.keyRight.setDown(false);
+            options.keyJump.setDown(false);
+            if (player != null) {
+                player.setDeltaMovement(0, player.getDeltaMovement().y, 0);
+            }
+        }
+        
         abstract String describe();
     }
+
     private class PositionAction extends BuildAction {
-    private Vec3 startPos;
-    private Vec3 targetPos;
-    private float startYaw, startPitch;
-    private float targetYaw, targetPitch;
-    private int ticks = 0;
-    private static final int DURATION_TICKS = 6; // Adjust for faster/slower alignment
+        private Vec3 startPos;
+        private Vec3 targetPos;
+        private float startYaw, startPitch;
+        private float targetYaw, targetPitch;
+        private int ticks = 0;
+        private static final int DURATION_TICKS = 6;
 
-    @Override
-    void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-        ticks = 0;
+        @Override
+        void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            ticks = 0;
 
-        // 1. Calculate center target of the block the player is currently standing on
-        BlockPos currentBlock = player.blockPosition();
-        startPos = player.position();
-        targetPos = new Vec3(
-            currentBlock.getX() + 0.5,
-            startPos.y, // Keep exact current Y position
-            currentBlock.getZ() + 0.5
-        );
+            BlockPos currentBlock = player.blockPosition();
+            startPos = player.position();
+            targetPos = new Vec3(
+                currentBlock.getX() + 0.5,
+                startPos.y,
+                currentBlock.getZ() + 0.5
+            );
 
-        // 2. Determine nearest cardinal direction and calculate target yaw
-        Direction nearestFacing = Direction.orderedByNearest(player)[0];
-        
-        // If orderedByNearest picked UP or DOWN (looking straight at ceiling/floor),
-        // fallback to the nearest horizontal direction
-        if (nearestFacing.getAxis().isVertical()) {
-            nearestFacing = player.getDirection();
+            Direction nearestFacing = Direction.orderedByNearest(player)[0];
+            if (nearestFacing.getAxis().isVertical()) {
+                nearestFacing = player.getDirection();
+            }
+
+            startYaw = player.getYRot();
+            startPitch = player.getXRot();
+
+            float rawTargetYaw = nearestFacing.toYRot();
+            targetYaw = startYaw + Mth.wrapDegrees(rawTargetYaw - startYaw);
+            targetPitch = 0.0f;
         }
 
-        startYaw = player.getYRot();
-        startPitch = player.getXRot();
+        @Override
+        boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            ticks++;
+            float t = Math.min(1.0f, ticks / (float) DURATION_TICKS);
 
-        // Calculate minimal rotation path to target yaw
-        float rawTargetYaw = nearestFacing.toYRot();
-        targetYaw = startYaw + Mth.wrapDegrees(rawTargetYaw - startYaw);
-        
-        // Level the camera with the horizon
-        targetPitch = 0.0f;
-    }
+            double currentX = startPos.x + (targetPos.x - startPos.x) * t;
+            double currentZ = startPos.z + (targetPos.z - startPos.z) * t;
+            player.setPos(currentX, player.getY(), currentZ);
 
-    @Override
-    boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-        ticks++;
-        float t = Math.min(1.0f, ticks / (float) DURATION_TICKS);
+            player.setDeltaMovement(0, player.getDeltaMovement().y, 0);
 
-        // Interpolate position
-        double currentX = startPos.x + (targetPos.x - startPos.x) * t;
-        double currentZ = startPos.z + (targetPos.z - startPos.z) * t;
-        player.setPos(currentX, player.getY(), currentZ);
+            player.setYRot(startYaw + (targetYaw - startYaw) * t);
+            player.setXRot(startPitch + (targetPitch - startPitch) * t);
 
-        // Zero out residual velocity so the player doesn't keep sliding
-        player.setDeltaMovement(0, player.getDeltaMovement().y, 0);
+            if (t >= 1.0f) {
+                player.setPos(targetPos.x, player.getY(), targetPos.z);
+                player.setYRot(targetYaw);
+                player.setXRot(targetPitch);
+                return true;
+            }
 
-        // Interpolate rotation (Yaw and Pitch)
-        player.setYRot(startYaw + (targetYaw - startYaw) * t);
-        player.setXRot(startPitch + (targetPitch - startPitch) * t);
-
-        if (t >= 1.0f) {
-            player.setPos(targetPos.x, player.getY(), targetPos.z);
-            player.setYRot(targetYaw);
-            player.setXRot(targetPitch);
-            return true;
+            return false;
         }
 
-        return false;
+        @Override
+        String describe() {
+            return "center position and align facing direction";
+        }
     }
 
-    @Override
-    String describe() {
-        return "center position and align facing direction";
-    }
-}
     private enum MoveDir { FORWARD, BACK, LEFT, RIGHT }
 
     private class MoveAction extends BuildAction {
@@ -552,25 +540,29 @@ steps.add(lookForPlace());
         @Override
         void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
             startPos = player.position();
+            ticks = 0;
             keyFor(options).setDown(true);
         }
 
         @Override
-boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-    ticks++;
-    double traveled = player.position().distanceTo(startPos);
-    
-    // 0.35 allows exact 1-block steps to trigger stop logic faster before overshooting
-    boolean arrived = traveled >= (blocks - 0.35); 
-    boolean timedOut = ticks >= TIMEOUT_TICKS_PER_BLOCK * Math.max(1, (int) blocks);
+        boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            ticks++;
+            double traveled = player.position().distanceTo(startPos);
+            
+            boolean arrived = traveled >= (blocks - 0.35); 
+            boolean timedOut = ticks >= TIMEOUT_TICKS_PER_BLOCK * Math.max(1, (int) blocks);
 
-    if (arrived || timedOut) {
-        keyFor(options).setDown(false);
-        player.setDeltaMovement(0, player.getDeltaMovement().y, 0);
-        return true;
-    }
-    return false;
-}
+            if (arrived || timedOut) {
+                return true;
+            }
+            return false;
+        }
+
+        @Override
+        void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            keyFor(options).setDown(false);
+            super.end(player, level, options);
+        }
 
         private KeyMapping keyFor(net.minecraft.client.Options options) {
             switch (dir) {
@@ -601,6 +593,7 @@ boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options optio
 
         @Override
         void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            ticks = 0;
             Direction current = player.getDirection();
             Direction target = turnRight ? current.getClockWise() : current.getCounterClockWise();
             startYaw = player.getYRot();
@@ -647,60 +640,56 @@ boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options optio
         }
 
         @Override
-void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-    BlockPos targetPos;
+        void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            ticks = 0;
+            BlockPos targetPos;
 
-    if (targetDirection == LookTarget.DOWN_SELF) {
-        // Directly under the player's current stance
-        targetPos = player.blockPosition().below();
-    } else if (targetDirection == LookTarget.UP_SELF) {
-        // Directly above the player's head (2 blocks up from stance)
-        targetPos = player.blockPosition().above(2);
-    } else {
-        // Base reference offset: 1 block directly in front
-        BlockPos front = player.blockPosition().relative(player.getDirection(), 1);
-        switch (targetDirection) {
-            case DOWN:
-                targetPos = front.below();
-                break;
-            case UP:
-                targetPos = front.above();
-                break;
-            case FRONT:
-            default:
-                targetPos = front;
-                break;
+            if (targetDirection == LookTarget.DOWN_SELF) {
+                targetPos = player.blockPosition().below();
+            } else if (targetDirection == LookTarget.UP_SELF) {
+                targetPos = player.blockPosition().above(2);
+            } else {
+                BlockPos front = player.blockPosition().relative(player.getDirection(), 1);
+                switch (targetDirection) {
+                    case DOWN:
+                        targetPos = front.below();
+                        break;
+                    case UP:
+                        targetPos = front.above();
+                        break;
+                    case FRONT:
+                    default:
+                        targetPos = front;
+                        break;
+                }
+            }
+
+            candidate = findClickableFace(level, targetPos);
+            if (candidate == null) {
+                player.sendSystemMessage(Component.literal("Nothing nearby to look at (" + targetDirection.name().toLowerCase() + ")."));
+                return;
+            }
+
+            Vec3 eyePos = player.getEyePosition(1.0f);
+            Vec3 lookAt = candidate.getLocation();
+            Vec3 diff = lookAt.subtract(eyePos);
+            double horizontalDist = Math.sqrt(diff.x * diff.x + diff.z * diff.z);
+
+            startYaw = player.getYRot();
+            startPitch = player.getXRot();
+
+            if (targetDirection == LookTarget.DOWN_SELF || targetDirection == LookTarget.DOWN || targetDirection == LookTarget.UP_SELF) {
+                targetYaw = startYaw;
+            } else if (horizontalDist < 0.001) {
+                targetYaw = startYaw;
+            } else {
+                float rawYaw = (float) Math.toDegrees(Math.atan2(-diff.x, diff.z));
+                targetYaw = startYaw + Mth.wrapDegrees(rawYaw - startYaw);
+            }
+
+            float rawPitch = (float) -Math.toDegrees(Math.atan2(diff.y, horizontalDist));
+            targetPitch = Mth.clamp(rawPitch, -89.0f, 89.0f);
         }
-    }
-
-    candidate = findClickableFace(level, targetPos);
-    if (candidate == null) {
-        player.sendSystemMessage(Component.literal("Nothing nearby to look at (" + targetDirection.name().toLowerCase() + ")."));
-        return;
-    }
-
-    Vec3 eyePos = player.getEyePosition(1.0f);
-    Vec3 lookAt = candidate.getLocation();
-    Vec3 diff = lookAt.subtract(eyePos);
-    double horizontalDist = Math.sqrt(diff.x * diff.x + diff.z * diff.z);
-
-    startYaw = player.getYRot();
-    startPitch = player.getXRot();
-
-    // Retain exact current Yaw when looking straight up or down to avoid camera snapping
-    if (targetDirection == LookTarget.DOWN_SELF || targetDirection == LookTarget.DOWN || targetDirection == LookTarget.UP_SELF) {
-        targetYaw = startYaw;
-    } else if (horizontalDist < 0.001) {
-        targetYaw = startYaw;
-    } else {
-        float rawYaw = (float) Math.toDegrees(Math.atan2(-diff.x, diff.z));
-        targetYaw = startYaw + Mth.wrapDegrees(rawYaw - startYaw);
-    }
-
-    // Clamp pitch to -89.0f so looking straight up won't flip the camera matrix
-    float rawPitch = (float) -Math.toDegrees(Math.atan2(diff.y, horizontalDist));
-    targetPitch = Mth.clamp(rawPitch, -89.0f, 89.0f);
-}
 
         @Override
         boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
@@ -766,7 +755,7 @@ void begin(LocalPlayer player, Level level, net.minecraft.client.Options options
 
             options.keyUp.setDown(true);
 
-            if (player.onGround() && ticks < 10) {
+            if (player.onGround() && ticks < 5) {
                 options.keyJump.setDown(true);
             } else {
                 options.keyJump.setDown(false);
@@ -778,9 +767,6 @@ void begin(LocalPlayer player, Level level, net.minecraft.client.Options options
             boolean timedOut = ticks >= TIMEOUT_TICKS;
 
             if ((landed && gainedHeight && movedForward) || timedOut) {
-                options.keyJump.setDown(false);
-                options.keyUp.setDown(false);
-
                 if (timedOut && !gainedHeight) {
                     player.sendSystemMessage(Component.literal("Jump forward failed — wall blocked or missed ledge."));
                 }
@@ -788,6 +774,13 @@ void begin(LocalPlayer player, Level level, net.minecraft.client.Options options
             }
 
             return false;
+        }
+
+        @Override
+        void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            options.keyJump.setDown(false);
+            options.keyUp.setDown(false);
+            super.end(player, level, options);
         }
 
         @Override
@@ -841,11 +834,16 @@ void begin(LocalPlayer player, Level level, net.minecraft.client.Options options
             boolean timedOut = ticks >= TIMEOUT_TICKS;
 
             if (landed || timedOut) {
-                options.keyJump.setDown(false);
                 return true;
             }
 
             return false;
+        }
+
+        @Override
+        void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            options.keyJump.setDown(false);
+            super.end(player, level, options);
         }
 
         @Override
@@ -856,7 +854,6 @@ void begin(LocalPlayer player, Level level, net.minecraft.client.Options options
 
     private class PlaceAction extends BuildAction {
         private boolean backingUp = false;
-        private Vec3 startPos = null;
         private static final int BACKUP_TIMEOUT_TICKS = 20;
         private int backupTicks = 0;
 
@@ -883,7 +880,6 @@ void begin(LocalPlayer player, Level level, net.minecraft.client.Options options
                 if (!backingUp) {
                     backingUp = true;
                     backupTicks = 0;
-                    startPos = player.position();
                     options.keyDown.setDown(true);
                 }
 
@@ -928,9 +924,14 @@ void begin(LocalPlayer player, Level level, net.minecraft.client.Options options
             if (backingUp) {
                 options.keyDown.setDown(false);
                 backingUp = false;
-                startPos = null;
                 backupTicks = 0;
             }
+        }
+
+        @Override
+        void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            cleanupBackup(options);
+            super.end(player, level, options);
         }
 
         @Override
@@ -1008,6 +1009,12 @@ void begin(LocalPlayer player, Level level, net.minecraft.client.Options options
             net.minecraft.client.Minecraft.getInstance().gameMode.continueDestroyBlock(target, Direction.UP);
             player.getInventory().setSelectedSlot(previousSlot);
             return false;
+        }
+
+        @Override
+        void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            net.minecraft.client.Minecraft.getInstance().gameMode.stopDestroyBlock();
+            super.end(player, level, options);
         }
 
         @Override
@@ -1167,24 +1174,27 @@ void begin(LocalPlayer player, Level level, net.minecraft.client.Options options
         }
 
         @Override
+        void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            net.minecraft.client.Minecraft.getInstance().gameMode.stopDestroyBlock();
+            super.end(player, level, options);
+        }
+
+        @Override
         String describe() {
             return "place and break loop";
         }
     }
 
     private BlockHitResult findClickableFace(Level level, BlockPos pos) {
-        // 1. If pos itself is solid, target it directly
         if (!level.getBlockState(pos).canBeReplaced()) {
             return buildHitResult(pos, Direction.UP);
         }
 
-        // 2. If pos is air/replaceable, look at the block below it
         BlockPos below = pos.below();
         if (!level.getBlockState(below).canBeReplaced()) {
             return buildHitResult(below, Direction.UP);
         }
 
-        // 3. Check horizontal neighboring blocks
         for (Direction d : Direction.Plane.HORIZONTAL) {
             BlockPos neighbor = pos.relative(d);
             if (!level.getBlockState(neighbor).canBeReplaced()) {
@@ -1192,7 +1202,6 @@ void begin(LocalPlayer player, Level level, net.minecraft.client.Options options
             }
         }
 
-        // 4. Check block directly above
         BlockPos above = pos.above();
         if (!level.getBlockState(above).canBeReplaced()) {
             return buildHitResult(above, Direction.DOWN);
