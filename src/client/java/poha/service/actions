@@ -1,0 +1,77 @@
+        steps.add(lookForPlace());
+        steps.add(placeAndBreakLoop(50));
+        steps.add(moveForward(1));
+        steps.add(moveBack(1));
+
+
+                steps.add(lookForPlaceDown());
+        steps.add(place());
+
+
+        steps.add(lookForPlaceFront());
+        steps.add(place());
+        steps.add(turnLeft());
+
+        steps.add(lookForPlaceFront());
+        steps.add(place());
+        steps.add(turnLeft());
+
+        steps.add(lookForPlaceFront());
+        steps.add(place());
+        steps.add(turnLeft());
+--------------
+   steps.add(lookForPlace());
+    steps.add(place());
+
+    steps.add(turnLeft());
+    steps.add(turnRight());
+
+
+    steps.add(moveLeft(1));
+    steps.add(lookForPlace());
+    steps.add(place());
+    
+    steps.add(moveLeft(1));
+    steps.add(lookForPlace());
+    steps.add(place());
+
+    steps.add(moveRight(3));
+    steps.add(lookForPlace());
+    steps.add(place());
+
+    steps.add(moveRight(1));
+    steps.add(lookForPlace());
+    steps.add(place());
+
+    steps.add(moveLeft(2));
+    
+
+
+    steps.add(jumpForward());
+
+
+    steps.add(turnLeft());
+    steps.add(moveForward(1));
+    steps.add(lookForPlace());
+    steps.add(place());
+    
+    steps.add(lookDown());
+    steps.add(jumpAndPlace());
+    steps.add(lookForPlaceFront());
+    steps.add(place());
+
+    steps.add(lookDown());
+    steps.add(jumpAndPlace());
+    steps.add(lookForPlaceFront());
+    steps.add(place());
+
+
+
+    steps.add(lookForPlaceUp());
+    steps.add(place());
+
+    steps.add(turnRight());
+    steps.add(turnRight());
+    steps.add(moveForward(2));
+    steps.add(lookForPlace());
+    steps.add(place());

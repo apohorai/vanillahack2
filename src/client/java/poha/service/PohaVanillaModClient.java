@@ -55,6 +55,12 @@ public class PohaVanillaModClient implements ClientModInitializer {
     private boolean sequenceStopRequested = false;
     private KeyMapping autoRunToggleKey;
 
+    // Set by any action (e.g. tool durability dropping too low) to force an
+    // immediate full stop of the sequence/loop, regardless of how it was
+    // triggered (G, K, or J) — as opposed to sequenceStopRequested, which is
+    // a graceful "finish this step then stop" request from the player.
+    private boolean sequenceAbortRequested = false;
+
     // Tracks if the J-key place-and-break loop is running.
     private boolean jLooping = false;
 
@@ -211,11 +217,88 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
     private java.util.List<BuildAction> buildSequence() {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
+steps.add(lookForPlace());
+    steps.add(place());
 
-        steps.add(lookForPlace());
-        steps.add(placeAndBreakLoop(50));
-        steps.add(moveForward(1));
-        steps.add(moveBack(1));
+    steps.add(turnLeft());
+    steps.add(turnRight());
+
+
+    steps.add(moveLeft(1));
+    steps.add(lookForPlace());
+    steps.add(place());
+    
+    steps.add(moveLeft(1));
+    steps.add(lookForPlace());
+    steps.add(place());
+
+    steps.add(moveRight(3));
+    steps.add(lookForPlace());
+    steps.add(place());
+
+    steps.add(moveRight(1));
+    steps.add(lookForPlace());
+    steps.add(place());
+
+    steps.add(moveLeft(2));
+    
+
+    steps.add(lookForPlace());
+    steps.add(jumpForward());
+    //end of bottom
+
+    steps.add(turnLeft());
+    steps.add(moveForward(1));
+    steps.add(lookForPlace());
+    steps.add(place());
+    
+    steps.add(lookDown());
+    steps.add(jumpAndPlace());
+    steps.add(lookForPlaceFront());
+    steps.add(place());
+
+    steps.add(lookDown());
+    steps.add(jumpAndPlace());
+    steps.add(lookForPlaceFront());
+    steps.add(place());
+
+
+
+    steps.add(lookForPlaceUp());
+    steps.add(place());
+    steps.add(lookDown());
+    steps.add(breakBelow());
+    steps.add(breakBelow());
+    //end of pillar left
+    steps.add(moveBack(1));
+    steps.add(lookForPlace());
+    steps.add(place());
+    
+    steps.add(lookDown());
+    steps.add(jumpAndPlace());
+    steps.add(lookForPlaceFront());
+    steps.add(place());
+
+    steps.add(lookDown());
+    steps.add(jumpAndPlace());
+    steps.add(lookForPlaceFront());
+    steps.add(place());
+
+
+
+    steps.add(lookForPlaceUp());
+    steps.add(place());
+    steps.add(lookDown());
+    steps.add(breakBelow());
+    steps.add(breakBelow());
+
+
+
+    steps.add(turnRight());
+    steps.add(turnRight());
+    steps.add(moveForward(2));
+    steps.add(lookForPlace());
+    steps.add(place());
 
         return steps;
     }
@@ -228,9 +311,20 @@ public class PohaVanillaModClient implements ClientModInitializer {
     private BuildAction turnLeft()              { return new TurnAction(false); }
     private BuildAction turnRight()             { return new TurnAction(true); }
     private BuildAction place()                 { return new PlaceAction(); }
-    private BuildAction breakBlock()            { return new BreakAction(); }
-    private BuildAction lookForPlace()         { return new LookForPlaceAction(); }
+    private BuildAction breakBlock()            { return new BreakAction(false); }
+    private BuildAction breakBelow()            { return new BreakAction(true); }
+
+    // Look actions targeting 1 block in front + direction
+    private BuildAction lookForPlaceFront()    { return new LookForPlaceAction(LookTarget.FRONT); }
+    private BuildAction lookForPlaceDown()     { return new LookForPlaceAction(LookTarget.DOWN); }
+    private BuildAction lookForPlaceUp()       { return new LookForPlaceAction(LookTarget.UP); }
+    private BuildAction lookForPlace()         { return lookForPlaceFront(); }
+
+    // Direct look down action (straight down at current feet position)
+    private BuildAction lookDown()             { return new LookForPlaceAction(LookTarget.DOWN_SELF); }
+
     private BuildAction jumpForward()          { return new JumpForwardAction(); }
+    private BuildAction jumpAndPlace()         { return new JumpAndPlaceAction(); }
     private BuildAction placeAndBreakLoop(int cycles) { return new PlaceAndBreakLoopAction(cycles); }
 
     private BlockHitResult lookedAtHit = null;
@@ -249,6 +343,19 @@ public class PohaVanillaModClient implements ClientModInitializer {
     private void tickSequence(LocalPlayer player, Level level, net.minecraft.client.Options options) {
         BuildAction action = sequence.get(sequenceIndex);
         boolean done = action.tick(player, level, options);
+
+        if (sequenceAbortRequested) {
+            player.sendSystemMessage(Component.literal("Sequence stopped."));
+            sequence = null;
+            sequenceIndex = -1;
+            sequenceRunning = false;
+            sequenceStopRequested = false;
+            sequenceAutoRun = false;
+            sequenceAbortRequested = false;
+            jLooping = false;
+            return;
+        }
+
         if (!done) return;
 
         sequenceRunning = false;
@@ -307,7 +414,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
         final double blocks;
         Vec3 startPos;
         int ticks = 0;
-        static final int TIMEOUT_TICKS_PER_BLOCK = 30;
+        static final int TIMEOUT_TICKS_PER_BLOCK = 45;
 
         MoveAction(MoveDir dir, int blocks) {
             this.dir = dir;
@@ -321,21 +428,21 @@ public class PohaVanillaModClient implements ClientModInitializer {
         }
 
         @Override
-        boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-            ticks++;
-            double traveled = player.position().distanceTo(startPos);
-            boolean arrived = traveled >= blocks - 0.15;
-            boolean timedOut = ticks >= TIMEOUT_TICKS_PER_BLOCK * Math.max(1, (int) blocks);
-            if (arrived || timedOut) {
-                keyFor(options).setDown(false);
-                if (timedOut && !arrived) {
-                    player.sendSystemMessage(Component.literal(
-                            "Didn't confirm moving the full distance — continuing anyway."));
-                }
-                return true;
-            }
-            return false;
-        }
+boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+    ticks++;
+    double traveled = player.position().distanceTo(startPos);
+    
+    // 0.35 allows exact 1-block steps to trigger stop logic faster before overshooting
+    boolean arrived = traveled >= (blocks - 0.35); 
+    boolean timedOut = ticks >= TIMEOUT_TICKS_PER_BLOCK * Math.max(1, (int) blocks);
+
+    if (arrived || timedOut) {
+        keyFor(options).setDown(false);
+        player.setDeltaMovement(0, player.getDeltaMovement().y, 0);
+        return true;
+    }
+    return false;
+}
 
         private KeyMapping keyFor(net.minecraft.client.Options options) {
             switch (dir) {
@@ -390,20 +497,53 @@ public class PohaVanillaModClient implements ClientModInitializer {
         }
     }
 
+    public enum LookTarget {
+        FRONT,
+        DOWN,
+        UP,
+        DOWN_SELF
+    }
+
     private class LookForPlaceAction extends BuildAction {
         private static final double REACH = 4.5;
         private static final int DURATION_TICKS = 8;
 
+        private final LookTarget targetDirection;
         BlockHitResult candidate;
         float startYaw, startPitch, targetYaw, targetPitch;
         int ticks = 0;
 
+        LookForPlaceAction(LookTarget targetDirection) {
+            this.targetDirection = targetDirection;
+        }
+
         @Override
         void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-            BlockPos front = player.blockPosition().relative(player.getDirection(), 1);
-            candidate = findClickableFace(level, front);
+            BlockPos targetPos;
+
+            if (targetDirection == LookTarget.DOWN_SELF) {
+                // Directly under the player's current stance
+                targetPos = player.blockPosition().below();
+            } else {
+                // Base reference offset: 1 block directly in front
+                BlockPos front = player.blockPosition().relative(player.getDirection(), 1);
+                switch (targetDirection) {
+                    case DOWN:
+                        targetPos = front.below();
+                        break;
+                    case UP:
+                        targetPos = front.above();
+                        break;
+                    case FRONT:
+                    default:
+                        targetPos = front;
+                        break;
+                }
+            }
+
+            candidate = findClickableFace(level, targetPos);
             if (candidate == null) {
-                player.sendSystemMessage(Component.literal("Nothing nearby to look at."));
+                player.sendSystemMessage(Component.literal("Nothing nearby to look at (" + targetDirection.name().toLowerCase() + ")."));
                 return;
             }
 
@@ -411,13 +551,24 @@ public class PohaVanillaModClient implements ClientModInitializer {
             Vec3 lookAt = candidate.getLocation();
             Vec3 diff = lookAt.subtract(eyePos);
             double horizontalDist = Math.sqrt(diff.x * diff.x + diff.z * diff.z);
-            float rawYaw = (float) Math.toDegrees(Math.atan2(-diff.x, diff.z));
-            float rawPitch = (float) -Math.toDegrees(Math.atan2(diff.y, horizontalDist));
 
             startYaw = player.getYRot();
-            startPitch = player.getXRot();
-            targetYaw = startYaw + Mth.wrapDegrees(rawYaw - startYaw);
-            targetPitch = rawPitch;
+startPitch = player.getXRot();
+
+// FIX: If looking down (or at feet), retain exact current Yaw facing 
+// to prevent snapping to sub-block offsets.
+if (targetDirection == LookTarget.DOWN_SELF || targetDirection == LookTarget.DOWN) {
+    targetYaw = startYaw;
+} else if (horizontalDist < 0.001) {
+    targetYaw = startYaw;
+} else {
+    float rawYaw = (float) Math.toDegrees(Math.atan2(-diff.x, diff.z));
+    targetYaw = startYaw + Mth.wrapDegrees(rawYaw - startYaw);
+}
+
+// Clamp pitch slightly short of absolute 90.0f to avoid camera flipping
+float rawPitch = (float) -Math.toDegrees(Math.atan2(diff.y, horizontalDist));
+targetPitch = Mth.clamp(rawPitch, -89.0f, 89.0f);
         }
 
         @Override
@@ -447,7 +598,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
             BlockHitResult hit = level.clip(ctx);
 
             if (hit.getType() == net.minecraft.world.phys.HitResult.Type.MISS) {
-                player.sendSystemMessage(Component.literal("Turned to look, but nothing in range to target."));
+                player.sendSystemMessage(Component.literal("Turned to look " + targetDirection.name().toLowerCase() + ", but nothing in range to target."));
                 lookedAtHit = null;
             } else {
                 lookedAtHit = hit;
@@ -458,7 +609,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
         @Override
         String describe() {
-            return "look for a block to target";
+            return "look " + targetDirection.name().toLowerCase() + " for a block to target";
         }
     }
 
@@ -511,6 +662,64 @@ public class PohaVanillaModClient implements ClientModInitializer {
         @Override
         String describe() {
             return "jump forward up 1 block";
+        }
+    }
+
+    private class JumpAndPlaceAction extends BuildAction {
+        private double startY;
+        private boolean placed = false;
+        private int ticks = 0;
+        private static final int TIMEOUT_TICKS = 40;
+
+        @Override
+        void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            startY = player.getY();
+            placed = false;
+            ticks = 0;
+
+            options.keyJump.setDown(true);
+        }
+
+        @Override
+        boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            ticks++;
+
+            if (ticks > 5) {
+                options.keyJump.setDown(false);
+            }
+
+            if (!placed && player.getY() >= startY + 1.0) {
+                BlockPos targetBelow = player.blockPosition().below();
+                
+                ItemStack stack = player.getInventory().getItem(SOURCE_HOTBAR_SLOT);
+                if (stack.isEmpty() || !(stack.getItem() instanceof net.minecraft.world.item.BlockItem)) {
+                    player.sendSystemMessage(Component.literal("Hotbar slot 6 doesn't have a placeable block."));
+                    placed = true;
+                } else {
+                    BlockHitResult hitResult = buildHitResult(targetBelow, Direction.UP);
+                    int previousSlot = player.getInventory().getSelectedSlot();
+                    player.getInventory().setSelectedSlot(SOURCE_HOTBAR_SLOT);
+                    net.minecraft.client.Minecraft.getInstance().gameMode
+                            .useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
+                    player.getInventory().setSelectedSlot(previousSlot);
+                    placed = true;
+                }
+            }
+
+            boolean landed = ticks > 5 && player.onGround();
+            boolean timedOut = ticks >= TIMEOUT_TICKS;
+
+            if (landed || timedOut) {
+                options.keyJump.setDown(false);
+                return true;
+            }
+
+            return false;
+        }
+
+        @Override
+        String describe() {
+            return "jump and place a block under feet";
         }
     }
 
@@ -599,17 +808,23 @@ public class PohaVanillaModClient implements ClientModInitializer {
         }
     }
 
-    // Breaks a block. Only requires a matching tool if the block actually
-    // needs one to drop anything (e.g. ores). Otherwise, prefers a Silk
-    // Touch tool if one's available (glass et al. need Silk Touch — any
-    // tier — to drop at all, even though no tier is strictly "required"),
-    // and falls back to whatever's currently selected if not.
     private class BreakAction extends BuildAction {
+        final boolean breakBelow;
         BlockPos target;
+
+        BreakAction(boolean breakBelow) {
+            this.breakBelow = breakBelow;
+        }
+
+        BreakAction() {
+            this(false);
+        }
 
         @Override
         void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-            if (lookedAtHit != null) {
+            if (breakBelow) {
+                target = player.blockPosition().below();
+            } else if (lookedAtHit != null) {
                 target = lookedAtHit.getBlockPos();
                 lookedAtHit = null;
             } else {
@@ -638,6 +853,23 @@ public class PohaVanillaModClient implements ClientModInitializer {
                 toolSlot = findSilkTouchSlot(player);
             }
 
+            if (toolSlot != -1) {
+                ItemStack toolStack = player.getInventory().getItem(toolSlot);
+                if (toolStack.isDamageableItem()) {
+                    int maxDamage = toolStack.getMaxDamage();
+                    int damage = toolStack.getDamageValue();
+                    double remainingFraction = maxDamage > 0 ? 1.0 - (damage / (double) maxDamage) : 1.0;
+                    if (remainingFraction < 0.2) {
+                        net.minecraft.client.Minecraft.getInstance().gameMode.stopDestroyBlock();
+                        player.sendSystemMessage(Component.literal(
+                                "Tool below 20% durability (" + Math.round(remainingFraction * 100) +
+                                        "%) — stopping the sequence."));
+                        sequenceAbortRequested = true;
+                        return true;
+                    }
+                }
+            }
+
             int previousSlot = player.getInventory().getSelectedSlot();
             if (toolSlot != -1) {
                 player.getInventory().setSelectedSlot(toolSlot);
@@ -649,17 +881,10 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
         @Override
         String describe() {
-            return "break the block in front of me";
+            return breakBelow ? "break the block directly below me" : "break the block in front of me";
         }
     }
 
-    // Toggleable action that continuously places and mines a block directly
-    // in front of the player until jLooping is set to false or materials run out.
-    // targetCycles < 0 means "run until jLooping goes false" (the J-key
-    // toggle case — needs an external stop signal). targetCycles >= 0 means
-    // "run exactly that many cycles, then stop on its own" — fully
-    // self-contained, safe to drop into buildSequence() with no key press
-    // involved at all.
     private class PlaceAndBreakLoopAction extends BuildAction {
         private enum Stage { PLACE, MINE }
         private Stage currentStage = Stage.PLACE;
@@ -669,6 +894,11 @@ public class PohaVanillaModClient implements ClientModInitializer {
         private int previousSlot;
         private int totalCycles = 0;
 
+        private boolean stopAfterThisCycle = false;
+
+        private int airConfirmTicks = 0;
+        private static final int AIR_CONFIRM_TICKS_REQUIRED = 2;
+
         PlaceAndBreakLoopAction(int targetCycles) {
             this.targetCycles = targetCycles;
         }
@@ -677,6 +907,8 @@ public class PohaVanillaModClient implements ClientModInitializer {
         void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
             currentStage = Stage.PLACE;
             totalCycles = 0;
+            stopAfterThisCycle = false;
+            airConfirmTicks = 0;
             if (targetCycles < 0) {
                 player.sendSystemMessage(Component.literal("Place-and-break loop started. Press J again to stop."));
             } else {
@@ -693,15 +925,16 @@ public class PohaVanillaModClient implements ClientModInitializer {
                     if (shouldStop) {
                         player.sendSystemMessage(Component.literal("Done. Completed " + totalCycles + " cycle(s)."));
                         if (targetCycles < 0) {
-                            jLooping = false; // tidy up the external flag if it drove this
+                            jLooping = false;
                         }
                         return true;
                     }
 
                     if (!executePlace(player, level)) {
-                        jLooping = false; // Stop loop on failure (out of blocks, etc.)
+                        jLooping = false;
                         return true;
                     }
+                    airConfirmTicks = 0;
                     currentStage = Stage.MINE;
                     net.minecraft.client.Minecraft.getInstance().gameMode
                             .startDestroyBlock(targetPos, Direction.UP);
@@ -709,12 +942,25 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
                 case MINE:
                     if (level.getBlockState(targetPos).isAir()) {
+                        airConfirmTicks++;
+                        if (airConfirmTicks < AIR_CONFIRM_TICKS_REQUIRED) {
+                            return false;
+                        }
+
                         net.minecraft.client.Minecraft.getInstance().gameMode.stopDestroyBlock();
                         player.getInventory().setSelectedSlot(previousSlot);
+                        airConfirmTicks = 0;
 
                         totalCycles++;
+
+                        if (stopAfterThisCycle) {
+                            sequenceAbortRequested = true;
+                            return true;
+                        }
+
                         currentStage = Stage.PLACE;
                     } else {
+                        airConfirmTicks = 0;
                         net.minecraft.client.Minecraft.getInstance().gameMode
                                 .continueDestroyBlock(targetPos, Direction.UP);
                     }
@@ -725,11 +971,17 @@ public class PohaVanillaModClient implements ClientModInitializer {
         }
 
         private boolean executePlace(LocalPlayer player, Level level) {
-            BlockPos target = player.blockPosition().relative(player.getDirection(), 1);
-            BlockHitResult hitResult = findClickableFace(level, target);
-            if (hitResult == null) {
-                player.sendSystemMessage(Component.literal("No valid block face to place against."));
-                return false;
+            BlockHitResult hitResult;
+            if (lookedAtHit != null) {
+                hitResult = lookedAtHit;
+                lookedAtHit = null;
+            } else {
+                BlockPos target = player.blockPosition().relative(player.getDirection(), 1);
+                hitResult = findClickableFace(level, target);
+                if (hitResult == null) {
+                    player.sendSystemMessage(Component.literal("No valid block face to place against."));
+                    return false;
+                }
             }
 
             targetPos = hitResult.getBlockPos().relative(hitResult.getDirection());
@@ -751,15 +1003,24 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
             int toolSlot = findBestTool(player, level, targetPos);
             if (toolSlot != -1) {
+                ItemStack toolStack = player.getInventory().getItem(toolSlot);
+                if (toolStack.isDamageableItem()) {
+                    int maxDamage = toolStack.getMaxDamage();
+                    int damage = toolStack.getDamageValue();
+                    double remainingFraction = maxDamage > 0 ? 1.0 - (damage / (double) maxDamage) : 1.0;
+                    if (remainingFraction < 0.2) {
+                        player.sendSystemMessage(Component.literal(
+                                "Tool below 20% durability (" + Math.round(remainingFraction * 100) +
+                                        "%) — will stop after breaking this block."));
+                        stopAfterThisCycle = true;
+                    }
+                }
                 player.getInventory().setSelectedSlot(toolSlot);
             }
 
             return true;
         }
 
-        // Same fix as BreakAction: only require a correct-tier tool if the
-        // block actually needs one; otherwise prefer Silk Touch if we have
-        // it, so this doesn't misreport things like glass as unbreakable.
         private int findBestTool(LocalPlayer player, Level level, BlockPos pos) {
             net.minecraft.world.level.block.state.BlockState state = level.getBlockState(pos);
             for (int i = 0; i < 9; i++) {
@@ -781,16 +1042,31 @@ public class PohaVanillaModClient implements ClientModInitializer {
     }
 
     private BlockHitResult findClickableFace(Level level, BlockPos pos) {
+        // 1. If pos itself is solid, target it directly
+        if (!level.getBlockState(pos).canBeReplaced()) {
+            return buildHitResult(pos, Direction.UP);
+        }
+
+        // 2. If pos is air/replaceable, look at the block below it
         BlockPos below = pos.below();
         if (!level.getBlockState(below).canBeReplaced()) {
             return buildHitResult(below, Direction.UP);
         }
+
+        // 3. Check horizontal neighboring blocks
         for (Direction d : Direction.Plane.HORIZONTAL) {
             BlockPos neighbor = pos.relative(d);
             if (!level.getBlockState(neighbor).canBeReplaced()) {
                 return buildHitResult(neighbor, d.getOpposite());
             }
         }
+
+        // 4. Check block directly above
+        BlockPos above = pos.above();
+        if (!level.getBlockState(above).canBeReplaced()) {
+            return buildHitResult(above, Direction.DOWN);
+        }
+
         return null;
     }
 
@@ -800,9 +1076,6 @@ public class PohaVanillaModClient implements ClientModInitializer {
         return new BlockHitResult(hitVec, clickedFace, clickedPos, false);
     }
 
-    // Finds a hotbar item enchanted with Silk Touch — enchantments are
-    // registry-driven data as of 1.20.5+, so this needs a Holder looked up
-    // through the level's registry access rather than a plain constant.
     private int findSilkTouchSlot(LocalPlayer player) {
         net.minecraft.core.Holder<net.minecraft.world.item.enchantment.Enchantment> silkTouch;
         try {
@@ -810,7 +1083,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
                     .lookupOrThrow(net.minecraft.core.registries.Registries.ENCHANTMENT)
                     .getOrThrow(net.minecraft.world.item.enchantment.Enchantments.SILK_TOUCH);
         } catch (Exception e) {
-            return -1; // registry lookup failed for some reason — just skip the preference
+            return -1;
         }
 
         for (int i = 0; i < 9; i++) {
@@ -875,13 +1148,6 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
         sneakKey.setDown(pendingWasSneaking);
 
-        // Immediately start mining the block we just placed. Only search for
-        // (and require) a specific tool if this block actually needs one to
-        // drop anything — e.g. ores need the right pickaxe tier. Plenty of
-        // blocks (glass, dirt, wood, ...) don't require any particular tool
-        // at all: isCorrectToolForDrops() would return false for ALL of them
-        // in that case (since none is "the" required tool), which isn't the
-        // same as "unbreakable" — so we shouldn't refuse to mine there.
         BlockPos placedPos = pendingClickPos.relative(pendingClickFace);
         Level level = player.level();
         net.minecraft.world.level.block.state.BlockState placedState = level.getBlockState(placedPos);
@@ -896,8 +1162,6 @@ public class PohaVanillaModClient implements ClientModInitializer {
         }
 
         if (pickaxeSlot == -1 && placedState.requiresCorrectToolForDrops()) {
-            // Genuinely needs a specific tool (like an ore) and we don't have
-            // one — this is a real "can't do this" case.
             player.sendSystemMessage(Component.literal("Placed it, but you don't have a pickaxe to break it with."));
             player.getInventory().setSelectedSlot(pendingPreviousSlot);
             looping = false;
@@ -905,10 +1169,6 @@ public class PohaVanillaModClient implements ClientModInitializer {
         }
 
         if (pickaxeSlot == -1) {
-            // Block doesn't require a specific tool tier — but some blocks
-            // (glass being the classic case) still drop nothing at all
-            // unless mined with Silk Touch. Prefer a Silk Touch tool if we
-            // have one, rather than just grabbing whatever's selected.
             int silkTouchSlot = findSilkTouchSlot(player);
             if (silkTouchSlot != -1) {
                 pickaxeSlot = silkTouchSlot;
@@ -916,8 +1176,6 @@ public class PohaVanillaModClient implements ClientModInitializer {
         }
 
         if (pickaxeSlot != -1) {
-            // Stop before grinding the tool down further if it's already
-            // below 20% durability remaining.
             ItemStack toolStack = player.getInventory().getItem(pickaxeSlot);
             if (toolStack.isDamageableItem()) {
                 int maxDamage = toolStack.getMaxDamage();
@@ -934,9 +1192,6 @@ public class PohaVanillaModClient implements ClientModInitializer {
             }
             player.getInventory().setSelectedSlot(pickaxeSlot);
         }
-        // else: no specific tool needed and no Silk Touch tool found — mine
-        // with whatever's currently selected (or bare hands); it'll break,
-        // it just may not drop anything, same as a real player punching it.
 
         miningPos = placedPos;
         miningPreviousSlot = pendingPreviousSlot;
@@ -948,7 +1203,6 @@ public class PohaVanillaModClient implements ClientModInitializer {
         Level level = player.level();
 
         if (level.getBlockState(miningPos).isAir()) {
-            // Done — the block broke since the last tick.
             net.minecraft.client.Minecraft.getInstance().gameMode.stopDestroyBlock();
             player.getInventory().setSelectedSlot(miningPreviousSlot);
             mining = false;
@@ -962,8 +1216,6 @@ public class PohaVanillaModClient implements ClientModInitializer {
         boolean stillOnTarget = net.minecraft.client.Minecraft.getInstance().gameMode
                 .continueDestroyBlock(miningPos, Direction.UP);
         if (!stillOnTarget) {
-            // Target/tool changed underneath us for some reason; restart the
-            // break rather than leaving it stuck.
             net.minecraft.client.Minecraft.getInstance().gameMode.startDestroyBlock(miningPos, Direction.UP);
         }
     }
