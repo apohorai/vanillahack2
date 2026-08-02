@@ -6,6 +6,7 @@ import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import org.lwjgl.glfw.GLFW;
+import net.minecraft.world.inventory.ContainerInput;
 
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.player.LocalPlayer;
@@ -18,6 +19,8 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
+// Import required at top:
+import net.minecraft.world.entity.player.Player;
 
 /**
  * Client-only entrypoint. This file MUST live under src/client/java, not
@@ -210,6 +213,8 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
         // Example: Switch to hotbar slot 1 (0-indexed 0) before building
         // steps.add(selectHotbarSlot(1));
+        steps.add(refillHotbarSlot(6));
+
         steps.add(selectHotbarSlot(7));
         steps.add(lookForPlace());
         steps.add(place());
@@ -370,6 +375,11 @@ public class PohaVanillaModClient implements ClientModInitializer {
     private BuildAction placeAndBreakLoop(int cycles) { return new PlaceAndBreakLoopAction(cycles); }
     private BuildAction centerAndAlign()       { return new PositionAction(); }
     private BuildAction lookUp()               { return new LookForPlaceAction(LookTarget.UP_SELF); }
+    // Refills whatever slot is currently configured as targetHotbarSlot
+    private BuildAction refillSlot() { return new RefillSlotAction(); }
+
+    // Refills a specific slot (1-indexed, e.g., 1 to 9)
+    private BuildAction refillHotbarSlot(int slotOneIndexed) { return new RefillSlotAction(slotOneIndexed - 1); }
 
     private BlockHitResult lookedAtHit = null;
 
@@ -475,7 +485,89 @@ public class PohaVanillaModClient implements ClientModInitializer {
         
         abstract String describe();
     }
-    
+    private class RefillSlotAction extends BuildAction {
+        private final int targetSlot;
+        private static final int FULL_STACK_SIZE = 64;
+
+        RefillSlotAction(int targetSlot) {
+            this.targetSlot = Mth.clamp(targetSlot, 0, 8);
+        }
+
+        RefillSlotAction() {
+            this.targetSlot = targetHotbarSlot; // Defaults to current target hotbar slot
+        }
+
+        @Override
+        boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            ItemStack targetStack = player.getInventory().getItem(targetSlot);
+
+            // If empty, we can't infer what item type to pull from inventory
+            if (targetStack.isEmpty()) {
+                player.sendSystemMessage(Component.literal(
+                        "Hotbar slot " + (targetSlot + 1) + " is empty — cannot infer item type to refill. Aborting sequence."));
+                sequenceAbortRequested = true;
+                return true;
+            }
+
+            // Already full
+            if (targetStack.getCount() >= FULL_STACK_SIZE) {
+                return true;
+            }
+
+            net.minecraft.world.item.Item targetItem = targetStack.getItem();
+            net.minecraft.client.multiplayer.MultiPlayerGameMode gameMode = net.minecraft.client.Minecraft.getInstance().gameMode;
+            if (gameMode == null) return true;
+
+            int containerId = player.inventoryMenu.containerId;
+            int targetContainerSlot = targetSlot + 36; // Hotbar slots in container menu are offset by 36
+
+            // Keep pulling matching items until slot reaches 64 or no matching items remain
+            while (player.getInventory().getItem(targetSlot).getCount() < FULL_STACK_SIZE) {
+                int matchingInventorySlot = -1;
+
+                // Search main inventory (slots 9 to 35) for matching item stack
+                for (int i = 9; i < 36; i++) {
+                    ItemStack invStack = player.getInventory().getItem(i);
+                    if (!invStack.isEmpty() && invStack.getItem() == targetItem) {
+                        matchingInventorySlot = i;
+                        break;
+                    }
+                }
+
+                // Out of items in inventory and still under 64
+                if (matchingInventorySlot == -1) {
+                    int currentCount = player.getInventory().getItem(targetSlot).getCount();
+                    player.sendSystemMessage(Component.literal(
+                            "Could not reach 64 items in hotbar slot " + (targetSlot + 1) + 
+                            " (currently " + currentCount + "/" + FULL_STACK_SIZE + "). Aborting sequence."));
+                    sequenceAbortRequested = true;
+                    return true;
+                }
+
+                int sourceContainerSlot = matchingInventorySlot;
+
+                /// 1. Pick up matching stack from main inventory
+gameMode.handleContainerInput(containerId, sourceContainerSlot, 0, ContainerInput.PICKUP, player);
+
+// 2. Deposit into target hotbar slot (combines stacks)
+gameMode.handleContainerInput(containerId, targetContainerSlot, 0, ContainerInput.PICKUP, player);
+
+// 3. Put leftover items back in source inventory slot
+if (!player.inventoryMenu.getCarried().isEmpty()) {
+    gameMode.handleContainerInput(containerId, sourceContainerSlot, 0, ContainerInput.PICKUP, player);
+}
+            }
+
+            player.sendSystemMessage(Component.literal(
+                    "Hotbar slot " + (targetSlot + 1) + " successfully refilled to 64 items."));
+            return true;
+        }
+
+        @Override
+        String describe() {
+            return "refill hotbar slot " + (targetSlot + 1) + " to 64 items";
+        }
+    }
     private class SelectSlotAction extends BuildAction {
         private final int slotIndex;
 
@@ -772,7 +864,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
             return "look " + targetDirection.name().toLowerCase() + " for a block to target";
         }
     }
-
+    
     private class JumpForwardAction extends BuildAction {
         private double startY;
         private Vec3 startPos;
