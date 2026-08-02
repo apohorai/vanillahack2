@@ -75,6 +75,10 @@ public class PohaVanillaModClient implements ClientModInitializer {
     // H toggles this on/off.
     private boolean looping = false;
 
+    // Default hotbar slot (0-indexed; 5 = Slot 6)
+    private static final int DEFAULT_HOTBAR_SLOT = 5;
+    private int targetHotbarSlot = DEFAULT_HOTBAR_SLOT;
+
     @Override
     public void onInitializeClient() {
         sequenceKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
@@ -119,6 +123,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
                         sequenceRunning = true;
                     }
                 } else {
+                    targetHotbarSlot = DEFAULT_HOTBAR_SLOT; // Reset to slot 6 default on new run
                     sequence = buildSequence();
                     sequenceIndex = 0;
                     sequenceRunning = false;
@@ -142,6 +147,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
                     client.player.sendSystemMessage(Component.literal(
                             "A sequence is already running via G — finish that first."));
                 } else {
+                    targetHotbarSlot = DEFAULT_HOTBAR_SLOT; // Reset to slot 6 default on new run
                     sequence = buildSequence();
                     sequenceIndex = 0;
                     sequenceStopRequested = false;
@@ -199,28 +205,34 @@ public class PohaVanillaModClient implements ClientModInitializer {
         });
     }
 
-    private static final int SOURCE_HOTBAR_SLOT = 5;
-
     private java.util.List<BuildAction> buildSequence() {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
 
+        // Example: Switch to hotbar slot 1 (0-indexed 0) before building
+        // steps.add(selectHotbarSlot(1));
+        steps.add(selectHotbarSlot(7));
         steps.add(lookForPlace());
         steps.add(place());
 
         steps.add(turnLeft());
         steps.add(turnRight());
 
+
+        steps.add(moveLeft(1));
+
+     
+        steps.add(lookForPlace());
+        steps.add(place());
+        
+        steps.add(selectHotbarSlot(6));
         steps.add(moveLeft(1));
         steps.add(lookForPlace());
         steps.add(place());
-
-        steps.add(moveLeft(1));
-        steps.add(lookForPlace());
-        steps.add(place());
-
+        steps.add(selectHotbarSlot(7));
         steps.add(moveRight(3));
         steps.add(lookForPlace());
         steps.add(place());
+        steps.add(selectHotbarSlot(6));
 
         steps.add(moveRight(1));
         steps.add(lookForPlace());
@@ -342,6 +354,10 @@ public class PohaVanillaModClient implements ClientModInitializer {
     private BuildAction breakBlock()            { return new BreakAction(false); }
     private BuildAction breakBelow()            { return new BreakAction(true); }
 
+    // Slot selection actions
+    private BuildAction selectSlot(int slotZeroIndexed) { return new SelectSlotAction(slotZeroIndexed); }
+    private BuildAction selectHotbarSlot(int slotOneIndexed) { return new SelectSlotAction(slotOneIndexed - 1); }
+
     private BuildAction lookForPlaceFront()    { return new LookForPlaceAction(LookTarget.FRONT); }
     private BuildAction lookForPlaceDown()     { return new LookForPlaceAction(LookTarget.DOWN); }
     private BuildAction lookForPlaceUp()       { return new LookForPlaceAction(LookTarget.UP); }
@@ -458,6 +474,30 @@ public class PohaVanillaModClient implements ClientModInitializer {
         }
         
         abstract String describe();
+    }
+    
+    private class SelectSlotAction extends BuildAction {
+        private final int slotIndex;
+
+        SelectSlotAction(int slotIndex) {
+            this.slotIndex = Mth.clamp(slotIndex, 0, 8);
+        }
+
+        @Override
+        void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            targetHotbarSlot = slotIndex;
+            player.sendSystemMessage(Component.literal("Active placement slot set to hotbar " + (targetHotbarSlot + 1)));
+        }
+
+        @Override
+        boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            return true;
+        }
+
+        @Override
+        String describe() {
+            return "select hotbar slot " + (slotIndex + 1);
+        }
     }
 
     private class PositionAction extends BuildAction {
@@ -815,14 +855,14 @@ public class PohaVanillaModClient implements ClientModInitializer {
             if (!placed && player.getY() >= startY + 1.0) {
                 BlockPos targetBelow = player.blockPosition().below();
                 
-                ItemStack stack = player.getInventory().getItem(SOURCE_HOTBAR_SLOT);
+                ItemStack stack = player.getInventory().getItem(targetHotbarSlot);
                 if (stack.isEmpty() || !(stack.getItem() instanceof net.minecraft.world.item.BlockItem)) {
-                    player.sendSystemMessage(Component.literal("Hotbar slot 6 doesn't have a placeable block."));
+                    player.sendSystemMessage(Component.literal("Hotbar slot " + (targetHotbarSlot + 1) + " doesn't have a placeable block."));
                     placed = true;
                 } else {
                     BlockHitResult hitResult = buildHitResult(targetBelow, Direction.UP);
                     int previousSlot = player.getInventory().getSelectedSlot();
-                    player.getInventory().setSelectedSlot(SOURCE_HOTBAR_SLOT);
+                    player.getInventory().setSelectedSlot(targetHotbarSlot);
                     net.minecraft.client.Minecraft.getInstance().gameMode
                             .useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
                     player.getInventory().setSelectedSlot(previousSlot);
@@ -905,14 +945,14 @@ public class PohaVanillaModClient implements ClientModInitializer {
                 return true;
             }
 
-            ItemStack stack = player.getInventory().getItem(SOURCE_HOTBAR_SLOT);
+            ItemStack stack = player.getInventory().getItem(targetHotbarSlot);
             if (stack.isEmpty() || !(stack.getItem() instanceof net.minecraft.world.item.BlockItem)) {
-                player.sendSystemMessage(Component.literal("Hotbar slot 6 doesn't have a placeable block in it."));
+                player.sendSystemMessage(Component.literal("Hotbar slot " + (targetHotbarSlot + 1) + " doesn't have a placeable block in it."));
                 return true;
             }
 
             int previousSlot = player.getInventory().getSelectedSlot();
-            player.getInventory().setSelectedSlot(SOURCE_HOTBAR_SLOT);
+            player.getInventory().setSelectedSlot(targetHotbarSlot);
             net.minecraft.client.Minecraft.getInstance().gameMode
                     .useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
             player.getInventory().setSelectedSlot(previousSlot);
@@ -1128,14 +1168,14 @@ public class PohaVanillaModClient implements ClientModInitializer {
                 return false;
             }
 
-            ItemStack stack = player.getInventory().getItem(SOURCE_HOTBAR_SLOT);
+            ItemStack stack = player.getInventory().getItem(targetHotbarSlot);
             if (stack.isEmpty() || !(stack.getItem() instanceof net.minecraft.world.item.BlockItem)) {
-                player.sendSystemMessage(Component.literal("Hotbar slot 6 doesn't have blocks remaining."));
+                player.sendSystemMessage(Component.literal("Hotbar slot " + (targetHotbarSlot + 1) + " doesn't have blocks remaining."));
                 return false;
             }
 
             previousSlot = player.getInventory().getSelectedSlot();
-            player.getInventory().setSelectedSlot(SOURCE_HOTBAR_SLOT);
+            player.getInventory().setSelectedSlot(targetHotbarSlot);
             net.minecraft.client.Minecraft.getInstance().gameMode
                     .useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
 
@@ -1246,10 +1286,10 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
         BlockPos target = origin.relative(facing, 1).relative(left, 2);
 
-        int hotbarSlot = SOURCE_HOTBAR_SLOT;
+        int hotbarSlot = targetHotbarSlot;
         ItemStack slotStack = player.getInventory().getItem(hotbarSlot);
         if (slotStack.isEmpty() || !(slotStack.getItem() instanceof net.minecraft.world.item.BlockItem)) {
-            player.sendSystemMessage(Component.literal("Hotbar slot 6 doesn't have a placeable block in it."));
+            player.sendSystemMessage(Component.literal("Hotbar slot " + (hotbarSlot + 1) + " doesn't have a placeable block in it."));
             looping = false;
             return;
         }
