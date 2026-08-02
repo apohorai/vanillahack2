@@ -245,6 +245,7 @@ steps.add(lookForPlace());
 
     steps.add(lookForPlace());
     steps.add(jumpForward());
+    steps.add(centerAndAlign());
     //end of bottom
 
     steps.add(turnLeft());
@@ -270,20 +271,16 @@ steps.add(lookForPlace());
     steps.add(breakBelow());
     steps.add(breakBelow());
     //end of pillar left
+    steps.add(centerAndAlign());
     steps.add(moveBack(1));
-    steps.add(lookForPlace());
-    steps.add(place());
+
     
     steps.add(lookDown());
     steps.add(jumpAndPlace());
-    steps.add(lookForPlaceFront());
-    steps.add(place());
+
 
     steps.add(lookDown());
     steps.add(jumpAndPlace());
-    steps.add(lookForPlaceFront());
-    steps.add(place());
-
 
 
     steps.add(lookForPlaceUp());
@@ -291,14 +288,71 @@ steps.add(lookForPlace());
     steps.add(lookDown());
     steps.add(breakBelow());
     steps.add(breakBelow());
+ // end of 2nd left top
+       steps.add(centerAndAlign());
+    steps.add(moveBack(1));
 
+    
+    steps.add(lookDown());
+    steps.add(jumpAndPlace());
+
+
+    steps.add(lookDown());
+    steps.add(jumpAndPlace());
+
+
+    steps.add(lookForPlaceUp());
+    steps.add(place());
+    steps.add(lookDown());
+    steps.add(breakBelow());
+    steps.add(breakBelow());
+ // end of 3rd left top
+     steps.add(centerAndAlign());
+    steps.add(moveBack(1));
+
+    
+    steps.add(lookDown());
+    steps.add(jumpAndPlace());
+
+
+    steps.add(lookDown());
+    steps.add(jumpAndPlace());
+
+
+    steps.add(lookForPlaceUp());
+    steps.add(place());
+
+    steps.add(lookDown());
+    steps.add(breakBelow());
+    steps.add(centerAndAlign());
+    steps.add(lookUp());
+    steps.add(place());
+    steps.add(breakBelow());
+// end of 4th left top
 
 
     steps.add(turnRight());
     steps.add(turnRight());
-    steps.add(moveForward(2));
+    steps.add(moveBack(1));
+    steps.add(lookDown());
+    steps.add(jumpAndPlace());
+
+    steps.add(centerAndAlign());
+    steps.add(lookForPlaceUp());
+    steps.add(place());
+    
+    steps.add(lookDown());
+    steps.add(breakBelow());
+    steps.add(lookForPlace());
+    steps.add(centerAndAlign());
+    steps.add(lookForPlaceUp());
+    steps.add(place());
+    
     steps.add(lookForPlace());
     steps.add(place());
+
+
+
 
         return steps;
     }
@@ -326,6 +380,8 @@ steps.add(lookForPlace());
     private BuildAction jumpForward()          { return new JumpForwardAction(); }
     private BuildAction jumpAndPlace()         { return new JumpAndPlaceAction(); }
     private BuildAction placeAndBreakLoop(int cycles) { return new PlaceAndBreakLoopAction(cycles); }
+    private BuildAction centerAndAlign() { return new PositionAction(); }
+    private BuildAction lookUp() { return new LookForPlaceAction(LookTarget.UP_SELF); }
 
     private BlockHitResult lookedAtHit = null;
 
@@ -406,7 +462,79 @@ steps.add(lookForPlace());
         abstract boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options);
         abstract String describe();
     }
+    private class PositionAction extends BuildAction {
+    private Vec3 startPos;
+    private Vec3 targetPos;
+    private float startYaw, startPitch;
+    private float targetYaw, targetPitch;
+    private int ticks = 0;
+    private static final int DURATION_TICKS = 6; // Adjust for faster/slower alignment
 
+    @Override
+    void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        ticks = 0;
+
+        // 1. Calculate center target of the block the player is currently standing on
+        BlockPos currentBlock = player.blockPosition();
+        startPos = player.position();
+        targetPos = new Vec3(
+            currentBlock.getX() + 0.5,
+            startPos.y, // Keep exact current Y position
+            currentBlock.getZ() + 0.5
+        );
+
+        // 2. Determine nearest cardinal direction and calculate target yaw
+        Direction nearestFacing = Direction.orderedByNearest(player)[0];
+        
+        // If orderedByNearest picked UP or DOWN (looking straight at ceiling/floor),
+        // fallback to the nearest horizontal direction
+        if (nearestFacing.getAxis().isVertical()) {
+            nearestFacing = player.getDirection();
+        }
+
+        startYaw = player.getYRot();
+        startPitch = player.getXRot();
+
+        // Calculate minimal rotation path to target yaw
+        float rawTargetYaw = nearestFacing.toYRot();
+        targetYaw = startYaw + Mth.wrapDegrees(rawTargetYaw - startYaw);
+        
+        // Level the camera with the horizon
+        targetPitch = 0.0f;
+    }
+
+    @Override
+    boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        ticks++;
+        float t = Math.min(1.0f, ticks / (float) DURATION_TICKS);
+
+        // Interpolate position
+        double currentX = startPos.x + (targetPos.x - startPos.x) * t;
+        double currentZ = startPos.z + (targetPos.z - startPos.z) * t;
+        player.setPos(currentX, player.getY(), currentZ);
+
+        // Zero out residual velocity so the player doesn't keep sliding
+        player.setDeltaMovement(0, player.getDeltaMovement().y, 0);
+
+        // Interpolate rotation (Yaw and Pitch)
+        player.setYRot(startYaw + (targetYaw - startYaw) * t);
+        player.setXRot(startPitch + (targetPitch - startPitch) * t);
+
+        if (t >= 1.0f) {
+            player.setPos(targetPos.x, player.getY(), targetPos.z);
+            player.setYRot(targetYaw);
+            player.setXRot(targetPitch);
+            return true;
+        }
+
+        return false;
+    }
+
+    @Override
+    String describe() {
+        return "center position and align facing direction";
+    }
+}
     private enum MoveDir { FORWARD, BACK, LEFT, RIGHT }
 
     private class MoveAction extends BuildAction {
@@ -501,7 +629,8 @@ boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options optio
         FRONT,
         DOWN,
         UP,
-        DOWN_SELF
+        DOWN_SELF,
+        UP_SELF
     }
 
     private class LookForPlaceAction extends BuildAction {
@@ -518,58 +647,60 @@ boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options optio
         }
 
         @Override
-        void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-            BlockPos targetPos;
+void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+    BlockPos targetPos;
 
-            if (targetDirection == LookTarget.DOWN_SELF) {
-                // Directly under the player's current stance
-                targetPos = player.blockPosition().below();
-            } else {
-                // Base reference offset: 1 block directly in front
-                BlockPos front = player.blockPosition().relative(player.getDirection(), 1);
-                switch (targetDirection) {
-                    case DOWN:
-                        targetPos = front.below();
-                        break;
-                    case UP:
-                        targetPos = front.above();
-                        break;
-                    case FRONT:
-                    default:
-                        targetPos = front;
-                        break;
-                }
-            }
-
-            candidate = findClickableFace(level, targetPos);
-            if (candidate == null) {
-                player.sendSystemMessage(Component.literal("Nothing nearby to look at (" + targetDirection.name().toLowerCase() + ")."));
-                return;
-            }
-
-            Vec3 eyePos = player.getEyePosition(1.0f);
-            Vec3 lookAt = candidate.getLocation();
-            Vec3 diff = lookAt.subtract(eyePos);
-            double horizontalDist = Math.sqrt(diff.x * diff.x + diff.z * diff.z);
-
-            startYaw = player.getYRot();
-startPitch = player.getXRot();
-
-// FIX: If looking down (or at feet), retain exact current Yaw facing 
-// to prevent snapping to sub-block offsets.
-if (targetDirection == LookTarget.DOWN_SELF || targetDirection == LookTarget.DOWN) {
-    targetYaw = startYaw;
-} else if (horizontalDist < 0.001) {
-    targetYaw = startYaw;
-} else {
-    float rawYaw = (float) Math.toDegrees(Math.atan2(-diff.x, diff.z));
-    targetYaw = startYaw + Mth.wrapDegrees(rawYaw - startYaw);
-}
-
-// Clamp pitch slightly short of absolute 90.0f to avoid camera flipping
-float rawPitch = (float) -Math.toDegrees(Math.atan2(diff.y, horizontalDist));
-targetPitch = Mth.clamp(rawPitch, -89.0f, 89.0f);
+    if (targetDirection == LookTarget.DOWN_SELF) {
+        // Directly under the player's current stance
+        targetPos = player.blockPosition().below();
+    } else if (targetDirection == LookTarget.UP_SELF) {
+        // Directly above the player's head (2 blocks up from stance)
+        targetPos = player.blockPosition().above(2);
+    } else {
+        // Base reference offset: 1 block directly in front
+        BlockPos front = player.blockPosition().relative(player.getDirection(), 1);
+        switch (targetDirection) {
+            case DOWN:
+                targetPos = front.below();
+                break;
+            case UP:
+                targetPos = front.above();
+                break;
+            case FRONT:
+            default:
+                targetPos = front;
+                break;
         }
+    }
+
+    candidate = findClickableFace(level, targetPos);
+    if (candidate == null) {
+        player.sendSystemMessage(Component.literal("Nothing nearby to look at (" + targetDirection.name().toLowerCase() + ")."));
+        return;
+    }
+
+    Vec3 eyePos = player.getEyePosition(1.0f);
+    Vec3 lookAt = candidate.getLocation();
+    Vec3 diff = lookAt.subtract(eyePos);
+    double horizontalDist = Math.sqrt(diff.x * diff.x + diff.z * diff.z);
+
+    startYaw = player.getYRot();
+    startPitch = player.getXRot();
+
+    // Retain exact current Yaw when looking straight up or down to avoid camera snapping
+    if (targetDirection == LookTarget.DOWN_SELF || targetDirection == LookTarget.DOWN || targetDirection == LookTarget.UP_SELF) {
+        targetYaw = startYaw;
+    } else if (horizontalDist < 0.001) {
+        targetYaw = startYaw;
+    } else {
+        float rawYaw = (float) Math.toDegrees(Math.atan2(-diff.x, diff.z));
+        targetYaw = startYaw + Mth.wrapDegrees(rawYaw - startYaw);
+    }
+
+    // Clamp pitch to -89.0f so looking straight up won't flip the camera matrix
+    float rawPitch = (float) -Math.toDegrees(Math.atan2(diff.y, horizontalDist));
+    targetPitch = Mth.clamp(rawPitch, -89.0f, 89.0f);
+}
 
         @Override
         boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
