@@ -214,8 +214,10 @@ public class PohaVanillaModClient implements ClientModInitializer {
         // Example: Switch to hotbar slot 1 (0-indexed 0) before building
         // steps.add(selectHotbarSlot(1));
         steps.add(refillHotbarSlot(6));
+        steps.add(refillHotbarSlot(7));
 
         steps.add(selectHotbarSlot(7));
+
         steps.add(lookForPlace());
         steps.add(place());
 
@@ -295,7 +297,9 @@ public class PohaVanillaModClient implements ClientModInitializer {
         steps.add(jumpAndPlace());
 
         steps.add(lookForPlaceUp());
+        steps.add(checkAxisAndSelectSlot(Axis.Z, 5, 8));
         steps.add(place());
+        steps.add(selectHotbarSlot(6));
         steps.add(lookDown());
         steps.add(breakBelow());
         steps.add(breakBelow());
@@ -380,6 +384,10 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
     // Refills a specific slot (1-indexed, e.g., 1 to 9)
     private BuildAction refillHotbarSlot(int slotOneIndexed) { return new RefillSlotAction(slotOneIndexed - 1); }
+    // Example: checkAxisAndSelectSlot(Axis.Y, 5, 2) -> If Y is divisible by 5, select Hotbar Slot 2
+    private BuildAction checkAxisAndSelectSlot(Axis axis, int divisor, int slotOneIndexed) {
+        return new CheckPosSelectSlotAction(axis, divisor, slotOneIndexed);
+    }
 
     private BlockHitResult lookedAtHit = null;
 
@@ -484,6 +492,49 @@ public class PohaVanillaModClient implements ClientModInitializer {
         }
         
         abstract String describe();
+    }
+    public enum Axis { X, Y, Z }
+
+    private class CheckPosSelectSlotAction extends BuildAction {
+        private final Axis axis;
+        private final int divisor;
+        private final int slotToSelect;
+
+        CheckPosSelectSlotAction(Axis axis, int divisor, int slotOneIndexed) {
+            this.axis = axis;
+            this.divisor = divisor;
+            this.slotToSelect = Mth.clamp(slotOneIndexed - 1, 0, 8); // Convert 1-indexed (1-9) to 0-indexed (0-8)
+        }
+
+        @Override
+        boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+            if (divisor == 0) {
+                player.sendSystemMessage(Component.literal("Divisor cannot be 0 for position check."));
+                return true;
+            }
+
+            BlockPos pos = player.blockPosition();
+            int coord = switch (axis) {
+                case X -> pos.getX();
+                case Y -> pos.getY();
+                case Z -> pos.getZ();
+            };
+
+            if (coord % divisor == 0) {
+                targetHotbarSlot = slotToSelect;
+                player.getInventory().setSelectedSlot(slotToSelect);
+                player.sendSystemMessage(Component.literal(
+                        "Position " + axis.name() + "=" + coord + " is divisible by " + divisor +
+                        ". Switched hotbar slot to " + (slotToSelect + 1) + "."));
+            }
+
+            return true;
+        }
+
+        @Override
+        String describe() {
+            return "check if " + axis.name() + " is divisible by " + divisor + " and set slot to " + (slotToSelect + 1);
+        }
     }
     private class RefillSlotAction extends BuildAction {
         private final int targetSlot;
