@@ -19,8 +19,11 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
-// Import required at top:
 import net.minecraft.world.entity.player.Player;
+
+import java.util.List;
+import java.util.ArrayList;
+import java.util.function.Supplier;
 
 /**
  * Client-only entrypoint. This file MUST live under src/client/java, not
@@ -42,6 +45,12 @@ public class PohaVanillaModClient implements ClientModInitializer {
     // Bound to J: toggles infinite place-and-break loop in front of you.
     private KeyMapping placeBreakKey;
 
+    // Bound to K: toggles continuous auto-run sequence execution.
+    private KeyMapping autoRunToggleKey;
+
+    // Bound to L: cycles through available predefined build sequences.
+    private KeyMapping cycleSequenceKey;
+
     private java.util.List<BuildAction> sequence = null;
     private int sequenceIndex = -1;
     private boolean sequenceRunning = false;
@@ -49,7 +58,6 @@ public class PohaVanillaModClient implements ClientModInitializer {
     // Toggled by K. Continuous auto-run sequence execution.
     private boolean sequenceAutoRun = false;
     private boolean sequenceStopRequested = false;
-    private KeyMapping autoRunToggleKey;
 
     // Set by any action to force an immediate full stop.
     private boolean sequenceAbortRequested = false;
@@ -82,8 +90,17 @@ public class PohaVanillaModClient implements ClientModInitializer {
     private static final int DEFAULT_HOTBAR_SLOT = 5;
     private int targetHotbarSlot = DEFAULT_HOTBAR_SLOT;
 
+    // Sequence Selection System
+    private final List<NamedSequence> registeredSequences = new ArrayList<>();
+    private int activeSequenceIndex = 0;
+
+    private record NamedSequence(String name, Supplier<List<BuildAction>> builder) {}
+
     @Override
     public void onInitializeClient() {
+        // Register available predefined sequences here
+        registerSequences();
+
         sequenceKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
                 "key.poha.run_sequence",
                 InputConstants.Type.KEYSYM,
@@ -112,8 +129,30 @@ public class PohaVanillaModClient implements ClientModInitializer {
                 CATEGORY
         ));
 
+        cycleSequenceKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+                "key.poha.cycle_sequence",
+                InputConstants.Type.KEYSYM,
+                GLFW.GLFW_KEY_L,
+                CATEGORY
+        ));
+
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player == null) return;
+
+            // Cycle sequence with L
+            while (cycleSequenceKey.consumeClick()) {
+                if (sequenceRunning || sequenceAutoRun || sequence != null) {
+                    client.player.sendSystemMessage(Component.literal(
+                            "Cannot switch sequence while a sequence is running or paused. Finish or stop it first."));
+                } else if (registeredSequences.isEmpty()) {
+                    client.player.sendSystemMessage(Component.literal("No sequences registered."));
+                } else {
+                    activeSequenceIndex = (activeSequenceIndex + 1) % registeredSequences.size();
+                    NamedSequence current = registeredSequences.get(activeSequenceIndex);
+                    client.player.sendSystemMessage(Component.literal(
+                            "Selected sequence: " + current.name() + " (" + (activeSequenceIndex + 1) + "/" + registeredSequences.size() + ")"));
+                }
+            }
 
             while (sequenceKey.consumeClick()) {
                 if (sequence != null) {
@@ -127,17 +166,18 @@ public class PohaVanillaModClient implements ClientModInitializer {
                     }
                 } else {
                     targetHotbarSlot = DEFAULT_HOTBAR_SLOT; // Reset to slot 6 default on new run
-                    sequence = buildSequence();
+                    sequence = buildActiveSequence();
                     sequenceIndex = 0;
                     sequenceRunning = false;
                     sequenceStopRequested = false;
                     sequenceAutoRun = false;
                     autoRunDelayTicks = 0;
                     if (sequence.isEmpty()) {
-                        client.player.sendSystemMessage(Component.literal("buildSequence() is empty — nothing to run."));
+                        client.player.sendSystemMessage(Component.literal("Selected sequence is empty — nothing to run."));
                         sequence = null;
                     } else {
-                        client.player.sendSystemMessage(Component.literal("Next: " + sequence.get(0).describe()));
+                        client.player.sendSystemMessage(Component.literal(
+                                "[" + getActiveSequenceName() + "] Next: " + sequence.get(0).describe()));
                     }
                 }
             }
@@ -151,17 +191,17 @@ public class PohaVanillaModClient implements ClientModInitializer {
                             "A sequence is already running via G — finish that first."));
                 } else {
                     targetHotbarSlot = DEFAULT_HOTBAR_SLOT; // Reset to slot 6 default on new run
-                    sequence = buildSequence();
+                    sequence = buildActiveSequence();
                     sequenceIndex = 0;
                     sequenceStopRequested = false;
                     autoRunDelayTicks = 0;
                     if (sequence.isEmpty()) {
-                        client.player.sendSystemMessage(Component.literal("buildSequence() is empty — nothing to run."));
+                        client.player.sendSystemMessage(Component.literal("Selected sequence is empty — nothing to run."));
                         sequence = null;
                     } else {
                         sequenceAutoRun = true;
                         client.player.sendSystemMessage(Component.literal(
-                                "Auto-run started — looping the sequence continuously. Press K again to stop."));
+                                "Auto-run started [" + getActiveSequenceName() + "] — looping continuously. Press K again to stop."));
                         BuildAction first = sequence.get(0);
                         first.begin(client.player, client.player.level(), client.options);
                         sequenceRunning = true;
@@ -208,11 +248,34 @@ public class PohaVanillaModClient implements ClientModInitializer {
         });
     }
 
-    private java.util.List<BuildAction> buildSequence() {
+    private void registerSequences() {
+        registeredSequences.clear();
+        registeredSequences.add(new NamedSequence("Tunnel Builder", this::buildTunnelBuilderSequence));
+        registeredSequences.add(new NamedSequence("Test", this::testSequence));
+        // Add additional sequences here in the future:
+        // registeredSequences.add(new NamedSequence("Bridge Builder", this::buildBridgeSequence));
+    }
+
+    private List<BuildAction> buildActiveSequence() {
+        if (registeredSequences.isEmpty()) return new ArrayList<>();
+        return registeredSequences.get(activeSequenceIndex).builder().get();
+    }
+
+    private String getActiveSequenceName() {
+        if (registeredSequences.isEmpty()) return "None";
+        return registeredSequences.get(activeSequenceIndex).name();
+    }
+    private java.util.List<BuildAction> testSequence() {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
 
-        // Example: Switch to hotbar slot 1 (0-indexed 0) before building
-        // steps.add(selectHotbarSlot(1));
+        steps.add(refillHotbarSlot(6));
+        
+        return steps;
+    }
+
+    private java.util.List<BuildAction> buildTunnelBuilderSequence() {
+        java.util.List<BuildAction> steps = new java.util.ArrayList<>();
+
         steps.add(refillHotbarSlot(6));
         steps.add(refillHotbarSlot(7));
 
@@ -224,10 +287,8 @@ public class PohaVanillaModClient implements ClientModInitializer {
         steps.add(turnLeft());
         steps.add(turnRight());
 
-
         steps.add(moveLeft(1));
 
-     
         steps.add(lookForPlace());
         steps.add(place());
         
@@ -271,7 +332,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
         steps.add(lookDown());
         steps.add(breakBelow());
         steps.add(breakBelow());
-
+        // first col end
         steps.add(centerAndAlign());
         steps.add(moveBack(1));
 
@@ -281,6 +342,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
         steps.add(lookDown());
         steps.add(jumpAndPlace());
 
+        steps.add(centerAndAlign());
         steps.add(lookForPlaceUp());
         steps.add(place());
         steps.add(lookDown());
@@ -296,10 +358,12 @@ public class PohaVanillaModClient implements ClientModInitializer {
         steps.add(lookDown());
         steps.add(jumpAndPlace());
 
+        steps.add(centerAndAlign());
         steps.add(lookForPlaceUp());
-        steps.add(checkAxisAndSelectSlot(Axis.Z, 5, 8));
+        steps.add(checkAxisAndSelectSlot(Axis.X, 5, 8));
         steps.add(place());
         steps.add(selectHotbarSlot(6));
+
         steps.add(lookDown());
         steps.add(breakBelow());
         steps.add(breakBelow());
@@ -348,6 +412,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
         steps.add(moveBack(1));
         steps.add(lookDown());
         steps.add(moveBack(1));
+        steps.add(moveBack(1));
         steps.add(lookForPlace());
         steps.add(centerAndAlign());
         return steps;
@@ -379,12 +444,9 @@ public class PohaVanillaModClient implements ClientModInitializer {
     private BuildAction placeAndBreakLoop(int cycles) { return new PlaceAndBreakLoopAction(cycles); }
     private BuildAction centerAndAlign()       { return new PositionAction(); }
     private BuildAction lookUp()               { return new LookForPlaceAction(LookTarget.UP_SELF); }
-    // Refills whatever slot is currently configured as targetHotbarSlot
-    private BuildAction refillSlot() { return new RefillSlotAction(); }
 
-    // Refills a specific slot (1-indexed, e.g., 1 to 9)
+    private BuildAction refillSlot() { return new RefillSlotAction(); }
     private BuildAction refillHotbarSlot(int slotOneIndexed) { return new RefillSlotAction(slotOneIndexed - 1); }
-    // Example: checkAxisAndSelectSlot(Axis.Y, 5, 2) -> If Y is divisible by 5, select Hotbar Slot 2
     private BuildAction checkAxisAndSelectSlot(Axis axis, int divisor, int slotOneIndexed) {
         return new CheckPosSelectSlotAction(axis, divisor, slotOneIndexed);
     }
@@ -400,12 +462,11 @@ public class PohaVanillaModClient implements ClientModInitializer {
     }
 
     private void tickSequence(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-        // Handle inter-step settling delay during auto-run or sequence loops
         if (autoRunDelayTicks > 0) {
             autoRunDelayTicks--;
             if (autoRunDelayTicks == 0 && sequenceIndex < sequence.size()) {
                 BuildAction next = sequence.get(sequenceIndex);
-                player.sendSystemMessage(Component.literal("Next: " + next.describe()));
+                player.sendSystemMessage(Component.literal("[" + getActiveSequenceName() + "] Next: " + next.describe()));
                 next.begin(player, level, options);
                 sequenceRunning = true;
             }
@@ -434,7 +495,6 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
         if (!done) return;
 
-        // Clean up the completed action's keys/momentum before moving to next step
         action.end(player, level, options);
         sequenceRunning = false;
         sequenceIndex++;
@@ -443,7 +503,6 @@ public class PohaVanillaModClient implements ClientModInitializer {
             if (sequenceAutoRun && !sequenceStopRequested) {
                 player.sendSystemMessage(Component.literal("Sequence complete — looping back to the start."));
                 sequenceIndex = 0;
-                // Give 2 ticks for ground physics to settle before starting from step 0
                 autoRunDelayTicks = 2;
                 return;
             }
@@ -467,11 +526,10 @@ public class PohaVanillaModClient implements ClientModInitializer {
         }
 
         if (sequenceAutoRun) {
-            // Wait 1 tick for physics and key binds to settle before starting next step
             autoRunDelayTicks = 1;
         } else {
             BuildAction next = sequence.get(sequenceIndex);
-            player.sendSystemMessage(Component.literal("Next: " + next.describe()));
+            player.sendSystemMessage(Component.literal("[" + getActiveSequenceName() + "] Next: " + next.describe()));
         }
     }
 
@@ -479,7 +537,6 @@ public class PohaVanillaModClient implements ClientModInitializer {
         void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {}
         abstract boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options);
         
-        // Guarantees input keys are released and residual horizontal velocity is killed upon completion/abort
         void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
             options.keyUp.setDown(false);
             options.keyDown.setDown(false);
@@ -493,6 +550,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
         
         abstract String describe();
     }
+
     public enum Axis { X, Y, Z }
 
     private class CheckPosSelectSlotAction extends BuildAction {
@@ -503,7 +561,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
         CheckPosSelectSlotAction(Axis axis, int divisor, int slotOneIndexed) {
             this.axis = axis;
             this.divisor = divisor;
-            this.slotToSelect = Mth.clamp(slotOneIndexed - 1, 0, 8); // Convert 1-indexed (1-9) to 0-indexed (0-8)
+            this.slotToSelect = Mth.clamp(slotOneIndexed - 1, 0, 8);
         }
 
         @Override
@@ -536,6 +594,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
             return "check if " + axis.name() + " is divisible by " + divisor + " and set slot to " + (slotToSelect + 1);
         }
     }
+
     private class RefillSlotAction extends BuildAction {
         private final int targetSlot;
         private static final int FULL_STACK_SIZE = 64;
@@ -545,14 +604,13 @@ public class PohaVanillaModClient implements ClientModInitializer {
         }
 
         RefillSlotAction() {
-            this.targetSlot = targetHotbarSlot; // Defaults to current target hotbar slot
+            this.targetSlot = targetHotbarSlot;
         }
 
         @Override
         boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
             ItemStack targetStack = player.getInventory().getItem(targetSlot);
 
-            // If empty, we can't infer what item type to pull from inventory
             if (targetStack.isEmpty()) {
                 player.sendSystemMessage(Component.literal(
                         "Hotbar slot " + (targetSlot + 1) + " is empty — cannot infer item type to refill. Aborting sequence."));
@@ -560,7 +618,6 @@ public class PohaVanillaModClient implements ClientModInitializer {
                 return true;
             }
 
-            // Already full
             if (targetStack.getCount() >= FULL_STACK_SIZE) {
                 return true;
             }
@@ -570,13 +627,11 @@ public class PohaVanillaModClient implements ClientModInitializer {
             if (gameMode == null) return true;
 
             int containerId = player.inventoryMenu.containerId;
-            int targetContainerSlot = targetSlot + 36; // Hotbar slots in container menu are offset by 36
+            int targetContainerSlot = targetSlot + 36;
 
-            // Keep pulling matching items until slot reaches 64 or no matching items remain
             while (player.getInventory().getItem(targetSlot).getCount() < FULL_STACK_SIZE) {
                 int matchingInventorySlot = -1;
 
-                // Search main inventory (slots 9 to 35) for matching item stack
                 for (int i = 9; i < 36; i++) {
                     ItemStack invStack = player.getInventory().getItem(i);
                     if (!invStack.isEmpty() && invStack.getItem() == targetItem) {
@@ -585,7 +640,6 @@ public class PohaVanillaModClient implements ClientModInitializer {
                     }
                 }
 
-                // Out of items in inventory and still under 64
                 if (matchingInventorySlot == -1) {
                     int currentCount = player.getInventory().getItem(targetSlot).getCount();
                     player.sendSystemMessage(Component.literal(
@@ -597,16 +651,12 @@ public class PohaVanillaModClient implements ClientModInitializer {
 
                 int sourceContainerSlot = matchingInventorySlot;
 
-                /// 1. Pick up matching stack from main inventory
-gameMode.handleContainerInput(containerId, sourceContainerSlot, 0, ContainerInput.PICKUP, player);
+                gameMode.handleContainerInput(containerId, sourceContainerSlot, 0, ContainerInput.PICKUP, player);
+                gameMode.handleContainerInput(containerId, targetContainerSlot, 0, ContainerInput.PICKUP, player);
 
-// 2. Deposit into target hotbar slot (combines stacks)
-gameMode.handleContainerInput(containerId, targetContainerSlot, 0, ContainerInput.PICKUP, player);
-
-// 3. Put leftover items back in source inventory slot
-if (!player.inventoryMenu.getCarried().isEmpty()) {
-    gameMode.handleContainerInput(containerId, sourceContainerSlot, 0, ContainerInput.PICKUP, player);
-}
+                if (!player.inventoryMenu.getCarried().isEmpty()) {
+                    gameMode.handleContainerInput(containerId, sourceContainerSlot, 0, ContainerInput.PICKUP, player);
+                }
             }
 
             player.sendSystemMessage(Component.literal(
@@ -619,6 +669,7 @@ if (!player.inventoryMenu.getCarried().isEmpty()) {
             return "refill hotbar slot " + (targetSlot + 1) + " to 64 items";
         }
     }
+
     private class SelectSlotAction extends BuildAction {
         private final int slotIndex;
 
