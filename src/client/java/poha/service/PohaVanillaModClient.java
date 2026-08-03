@@ -267,8 +267,8 @@ public class PohaVanillaModClient implements ClientModInitializer {
     }
     private java.util.List<BuildAction> testSequence() {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
-
-        steps.add(refillHotbarSlot(6));
+        steps.add(placeAndBreakLoop(30));
+        steps.add(eat(9));
         
         return steps;
     }
@@ -450,6 +450,8 @@ public class PohaVanillaModClient implements ClientModInitializer {
     private BuildAction checkAxisAndSelectSlot(Axis axis, int divisor, int slotOneIndexed) {
         return new CheckPosSelectSlotAction(axis, divisor, slotOneIndexed);
     }
+    private BuildAction eat(int slotOneIndexed) { return new EatAction(slotOneIndexed); }
+    private BuildAction eat()                  { return new EatAction(); }
 
     private BlockHitResult lookedAtHit = null;
 
@@ -550,7 +552,11 @@ public class PohaVanillaModClient implements ClientModInitializer {
         
         abstract String describe();
     }
-
+    /**
+     * Action that selects a hotbar slot and holds right-click (use key) 
+     * until the player finishes eating or cannot eat.
+     */
+    
     public enum Axis { X, Y, Z }
 
     private class CheckPosSelectSlotAction extends BuildAction {
@@ -594,6 +600,84 @@ public class PohaVanillaModClient implements ClientModInitializer {
             return "check if " + axis.name() + " is divisible by " + divisor + " and set slot to " + (slotToSelect + 1);
         }
     }
+
+    private class EatAction extends BuildAction {
+    private final int slotToUse;
+    private int startUseDuration = -1;
+    private int ticks = 0;
+    private static final int TIMEOUT_TICKS = 80; // Safety fallback (~4 seconds max)
+
+    EatAction(int slotOneIndexed) {
+        this.slotToUse = Mth.clamp(slotOneIndexed - 1, 0, 8);
+    }
+
+    EatAction() {
+        this.slotToUse = targetHotbarSlot;
+    }
+
+    @Override
+    void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        ticks = 0;
+        startUseDuration = -1;
+
+        ItemStack stack = player.getInventory().getItem(slotToUse);
+
+        // Check if the slot actually contains a food/edible item
+        if (stack.isEmpty() || !stack.has(net.minecraft.core.component.DataComponents.FOOD)) {
+            player.sendSystemMessage(Component.literal("Slot " + (slotToUse + 1) + " does not contain edible food. Skipping eat action."));
+            return;
+        }
+
+        // Switch to the target hotbar slot
+        player.getInventory().setSelectedSlot(slotToUse);
+
+        // Press and hold the use (right-click) key
+        options.keyUse.setDown(true);
+    }
+
+    @Override
+    boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        ticks++;
+
+        ItemStack stack = player.getInventory().getItem(slotToUse);
+
+        // Abort if item ran out or isn't food anymore
+        if (stack.isEmpty() || !stack.has(net.minecraft.core.component.DataComponents.FOOD)) {
+            return true;
+        }
+
+        // Track when eating actually starts
+        if (player.isUsingItem()) {
+            if (startUseDuration == -1) {
+                startUseDuration = player.getUseItemRemainingTicks();
+            }
+
+            // Player finished eating when remaining ticks reach 0 or item usage ends
+            if (player.getUseItemRemainingTicks() <= 0) {
+                return true;
+            }
+        } else if (ticks > 5 && startUseDuration == -1) {
+            // If after 5 ticks player isn't using item, player's food bar might be full or item can't be eaten
+            player.sendSystemMessage(Component.literal("Cannot eat from slot " + (slotToUse + 1) + " (hunger might be full)."));
+            return true;
+        }
+
+        // Timeout guard to prevent getting stuck
+        return ticks >= TIMEOUT_TICKS;
+    }
+
+    @Override
+    void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        // Release the right-click key when finished or interrupted
+        options.keyUse.setDown(false);
+        super.end(player, level, options);
+    }
+
+    @Override
+    String describe() {
+        return "eat food from hotbar slot " + (slotToUse + 1);
+    }
+}
 
     private class RefillSlotAction extends BuildAction {
         private final int targetSlot;
