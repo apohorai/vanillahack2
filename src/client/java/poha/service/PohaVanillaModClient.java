@@ -252,6 +252,9 @@ public class PohaVanillaModClient implements ClientModInitializer {
         registeredSequences.clear();
         registeredSequences.add(new NamedSequence("Tunnel Builder", this::buildTunnelBuilderSequence));
         registeredSequences.add(new NamedSequence("Test", this::testSequence));
+        registeredSequences.add(new NamedSequence("Drop", this::dropSequence));
+        registeredSequences.add(new NamedSequence("Drop64", this::dropSequence64));
+        registeredSequences.add(new NamedSequence("Drop64", this::dropSequence64Multiple));
         // Add additional sequences here in the future:
         // registeredSequences.add(new NamedSequence("Bridge Builder", this::buildBridgeSequence));
     }
@@ -268,6 +271,34 @@ public class PohaVanillaModClient implements ClientModInitializer {
     private java.util.List<BuildAction> testSequence() {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
         steps.add(placeAndBreakLoop(30));
+        steps.add(eat(9));
+        
+        return steps;
+    }
+
+    private java.util.List<BuildAction> dropSequence() {
+        java.util.List<BuildAction> steps = new java.util.ArrayList<>();
+        steps.add(dropHotbar(6, 1));
+        steps.add(eat(9));
+        
+        return steps;
+    }
+    private java.util.List<BuildAction> dropSequence64() {
+        java.util.List<BuildAction> steps = new java.util.ArrayList<>();
+        steps.add(refillHotbarSlot(6));
+        steps.add(dropHotbar(6, 40));
+        steps.add(eat(9));
+        
+        return steps;
+    }
+    private java.util.List<BuildAction> dropSequence64Multiple() {
+        java.util.List<BuildAction> steps = new java.util.ArrayList<>();
+        steps.add(refillHotbarSlot(6));
+        steps.add(refillHotbarSlot(7));
+        steps.add(refillHotbarSlot(9));
+        
+        steps.add(dropHotbar(6, 40));
+        steps.add(dropHotbar(7, 40));
         steps.add(eat(9));
         
         return steps;
@@ -453,6 +484,36 @@ public class PohaVanillaModClient implements ClientModInitializer {
     private BuildAction eat(int slotOneIndexed) { return new EatAction(slotOneIndexed); }
     private BuildAction eat()                  { return new EatAction(); }
 
+    // Drop N items from Hotbar in a single tick (instant)
+private BuildAction dropHotbar(int slotOneIndexed, int count) {
+    return new DropItemsAction(SlotType.HOTBAR, slotOneIndexed, count);
+}
+
+// Drop N items from Hotbar at a controlled rate (e.g., 5 items per tick to avoid strict server anti-cheat kicks)
+private BuildAction dropHotbar(int slotOneIndexed, int count, int itemsPerTick) {
+    return new DropItemsAction(SlotType.HOTBAR, slotOneIndexed, count, itemsPerTick);
+}
+
+// Drop entire stack from Hotbar
+private BuildAction dropHotbar(int slotOneIndexed) {
+    return new DropItemsAction(SlotType.HOTBAR, slotOneIndexed);
+}
+
+// Drop N items from Inventory in a single tick (instant)
+private BuildAction dropInventory(int slotOneIndexed, int count) {
+    return new DropItemsAction(SlotType.INVENTORY, slotOneIndexed, count);
+}
+
+// Drop N items from Inventory at a controlled rate
+private BuildAction dropInventory(int slotOneIndexed, int count, int itemsPerTick) {
+    return new DropItemsAction(SlotType.INVENTORY, slotOneIndexed, count, itemsPerTick);
+}
+
+// Drop entire stack from Inventory
+private BuildAction dropInventory(int slotOneIndexed) {
+    return new DropItemsAction(SlotType.INVENTORY, slotOneIndexed);
+}
+
     private BlockHitResult lookedAtHit = null;
 
     private void runSingleAction(BuildAction action, LocalPlayer player, Level level, net.minecraft.client.Options options) {
@@ -552,6 +613,96 @@ public class PohaVanillaModClient implements ClientModInitializer {
         
         abstract String describe();
     }
+
+    private class DropItemsAction extends BuildAction {
+    private final int targetSlot;
+    private final int countToDrop;
+    private final int itemsPerTick; // How many single items to drop per tick
+    private int remainingToDrop;
+
+    /**
+     * @param slotType HOTBAR (1-9) or INVENTORY (1-27)
+     * @param slotOneIndexed Slot number (1-based)
+     * @param countToDrop Total number of items to drop
+     * @param itemsPerTick How many items to drop per tick (set to Integer.MAX_VALUE or countToDrop for instant drop)
+     */
+    DropItemsAction(SlotType slotType, int slotOneIndexed, int countToDrop, int itemsPerTick) {
+        int index = Math.max(0, slotOneIndexed - 1);
+        if (slotType == SlotType.HOTBAR) {
+            this.targetSlot = Mth.clamp(index, 0, 8);
+        } else {
+            this.targetSlot = Mth.clamp(index, 0, 26) + 9;
+        }
+        this.countToDrop = Math.max(1, countToDrop);
+        this.itemsPerTick = Math.max(1, itemsPerTick);
+    }
+
+    // Default to dropping all requested items as fast as possible in a single tick
+    DropItemsAction(SlotType slotType, int slotOneIndexed, int countToDrop) {
+        this(slotType, slotOneIndexed, countToDrop, countToDrop);
+    }
+
+    // Drops full stack instantly
+    DropItemsAction(SlotType slotType, int slotOneIndexed) {
+        this(slotType, slotOneIndexed, Integer.MAX_VALUE, Integer.MAX_VALUE);
+    }
+
+    @Override
+    void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        remainingToDrop = countToDrop;
+    }
+
+    @Override
+    boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        net.minecraft.client.multiplayer.MultiPlayerGameMode gameMode = 
+                net.minecraft.client.Minecraft.getInstance().gameMode;
+        if (gameMode == null) return true;
+
+        int containerId = player.inventoryMenu.containerId;
+        int containerSlot = (targetSlot < 9) ? (targetSlot + 36) : targetSlot;
+
+        ItemStack stack = player.getInventory().getItem(targetSlot);
+        if (stack.isEmpty() || remainingToDrop <= 0) {
+            return true;
+        }
+
+        // 1. If dropping equal to or more than full stack, send 1 packet for full stack drop
+        if (remainingToDrop >= stack.getCount()) {
+            gameMode.handleContainerInput(containerId, containerSlot, 1, ContainerInput.THROW, player);
+            remainingToDrop = 0;
+            return true;
+        }
+
+        // 2. Otherwise, drop multiple items in a batch loop within this single tick
+        int droppedThisTick = 0;
+        while (remainingToDrop > 0 && droppedThisTick < itemsPerTick) {
+            ItemStack currentStack = player.getInventory().getItem(targetSlot);
+            if (currentStack.isEmpty()) break;
+
+            // Button 0 = THROW single item
+            gameMode.handleContainerInput(containerId, containerSlot, 0, ContainerInput.THROW, player);
+            remainingToDrop--;
+            droppedThisTick++;
+        }
+
+        return remainingToDrop <= 0 || player.getInventory().getItem(targetSlot).isEmpty();
+    }
+
+    @Override
+    String describe() {
+        String slotLabel = targetSlot < 9 
+                ? "hotbar slot " + (targetSlot + 1) 
+                : "inventory slot " + (targetSlot - 8);
+        return "drop " + (countToDrop == Integer.MAX_VALUE ? "all" : countToDrop) + " item(s) from " + slotLabel;
+    }
+}
+
+public enum SlotType {
+    HOTBAR,     // Hotbar slots 1–9
+    INVENTORY   // Inventory rows 1–3 (slots 1–27)
+}
+
+
     /**
      * Action that selects a hotbar slot and holds right-click (use key) 
      * until the player finishes eating or cannot eat.
