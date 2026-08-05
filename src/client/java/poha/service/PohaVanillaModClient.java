@@ -254,7 +254,8 @@ public class PohaVanillaModClient implements ClientModInitializer {
         registeredSequences.add(new NamedSequence("Test", this::testSequence));
         registeredSequences.add(new NamedSequence("Drop", this::dropSequence));
         registeredSequences.add(new NamedSequence("Drop64", this::dropSequence64));
-        registeredSequences.add(new NamedSequence("Drop64", this::dropSequence64Multiple));
+        registeredSequences.add(new NamedSequence("Drop64batch", this::dropSequence64Multiple));
+        registeredSequences.add(new NamedSequence("plot", this::plotSequence));
         // Add additional sequences here in the future:
         // registeredSequences.add(new NamedSequence("Bridge Builder", this::buildBridgeSequence));
     }
@@ -275,6 +276,15 @@ public class PohaVanillaModClient implements ClientModInitializer {
         
         return steps;
     }
+
+        private java.util.List<BuildAction> plotSequence() {
+        java.util.List<BuildAction> steps = new java.util.ArrayList<>();
+        steps.add(placePotWithFlower(6, 7));
+        steps.add(breakBlock());
+        
+        return steps;
+    }
+
 
     private java.util.List<BuildAction> dropSequence() {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
@@ -513,6 +523,10 @@ private BuildAction dropInventory(int slotOneIndexed, int count, int itemsPerTic
 private BuildAction dropInventory(int slotOneIndexed) {
     return new DropItemsAction(SlotType.INVENTORY, slotOneIndexed);
 }
+// Place pot from potSlot and immediately insert flower from flowerSlot (both 1-indexed)
+private BuildAction placePotWithFlower(int potSlotOneIndexed, int flowerSlotOneIndexed) {
+    return new PlaceFlowerPotAction(potSlotOneIndexed, flowerSlotOneIndexed);
+}
 
     private BlockHitResult lookedAtHit = null;
 
@@ -525,76 +539,90 @@ private BuildAction dropInventory(int slotOneIndexed) {
     }
 
     private void tickSequence(LocalPlayer player, Level level, net.minecraft.client.Options options) {
-        if (autoRunDelayTicks > 0) {
-            autoRunDelayTicks--;
-            if (autoRunDelayTicks == 0 && sequenceIndex < sequence.size()) {
-                BuildAction next = sequence.get(sequenceIndex);
-                player.sendSystemMessage(Component.literal("[" + getActiveSequenceName() + "] Next: " + next.describe()));
-                next.begin(player, level, options);
-                sequenceRunning = true;
-            }
-            return;
-        }
-
-        if (!sequenceRunning || sequenceIndex < 0 || sequenceIndex >= sequence.size()) {
-            return;
-        }
-
-        BuildAction action = sequence.get(sequenceIndex);
-        boolean done = action.tick(player, level, options);
-
-        if (sequenceAbortRequested) {
-            action.end(player, level, options);
-            player.sendSystemMessage(Component.literal("Sequence stopped."));
-            sequence = null;
-            sequenceIndex = -1;
-            sequenceRunning = false;
-            sequenceStopRequested = false;
-            sequenceAutoRun = false;
-            sequenceAbortRequested = false;
-            jLooping = false;
-            return;
-        }
-
-        if (!done) return;
-
-        action.end(player, level, options);
-        sequenceRunning = false;
-        sequenceIndex++;
-
-        if (sequenceIndex >= sequence.size()) {
-            if (sequenceAutoRun && !sequenceStopRequested) {
-                player.sendSystemMessage(Component.literal("Sequence complete — looping back to the start."));
-                sequenceIndex = 0;
-                autoRunDelayTicks = 2;
-                return;
-            }
-            player.sendSystemMessage(Component.literal(
-                    sequenceStopRequested ? "Stopped after completing the sequence." : "Sequence complete!"));
-            sequence = null;
-            sequenceIndex = -1;
-            sequenceStopRequested = false;
-            sequenceAutoRun = false;
-            return;
-        }
-
-        if (sequenceStopRequested) {
-            player.sendSystemMessage(Component.literal(
-                    "Stopped. " + (sequence.size() - sequenceIndex) + " step(s) remaining."));
-            sequence = null;
-            sequenceIndex = -1;
-            sequenceStopRequested = false;
-            sequenceAutoRun = false;
-            return;
-        }
-
-        if (sequenceAutoRun) {
-            autoRunDelayTicks = 1;
-        } else {
+    if (autoRunDelayTicks > 0) {
+        autoRunDelayTicks--;
+        if (autoRunDelayTicks == 0 && sequence != null && sequenceIndex < sequence.size()) {
             BuildAction next = sequence.get(sequenceIndex);
             player.sendSystemMessage(Component.literal("[" + getActiveSequenceName() + "] Next: " + next.describe()));
+            next.begin(player, level, options);
+            sequenceRunning = true;
         }
+        return;
     }
+
+    if (!sequenceRunning || sequence == null || sequenceIndex < 0 || sequenceIndex >= sequence.size()) {
+        return;
+    }
+
+    BuildAction action = sequence.get(sequenceIndex);
+    boolean done = action.tick(player, level, options);
+
+    if (sequenceAbortRequested) {
+        action.end(player, level, options);
+        player.sendSystemMessage(Component.literal("Sequence stopped due to an abort condition."));
+        sequence = null;
+        sequenceIndex = -1;
+        sequenceRunning = false;
+        sequenceStopRequested = false;
+        sequenceAutoRun = false;
+        sequenceAbortRequested = false;
+        jLooping = false;
+        return;
+    }
+
+    if (!done) return;
+
+    action.end(player, level, options);
+    sequenceRunning = false;
+    sequenceIndex++;
+
+    // Check if the current sequence iteration has finished
+    if (sequenceIndex >= sequence.size()) {
+        if (sequenceAutoRun && !sequenceStopRequested) {
+            player.sendSystemMessage(Component.literal("Sequence complete — rebuilding and looping back to start..."));
+            
+            // Rebuild fresh sequence actions for the next run
+            sequence = buildActiveSequence();
+            sequenceIndex = 0;
+            
+            if (sequence.isEmpty()) {
+                player.sendSystemMessage(Component.literal("Selected sequence is empty — stopping auto-run."));
+                sequence = null;
+                sequenceIndex = -1;
+                sequenceAutoRun = false;
+            } else {
+                // Short delay to let physics and key states settle before step 1
+                autoRunDelayTicks = 2;
+            }
+            return;
+        }
+
+        player.sendSystemMessage(Component.literal(
+                sequenceStopRequested ? "Stopped auto-run after completing sequence." : "Sequence complete!"));
+        sequence = null;
+        sequenceIndex = -1;
+        sequenceStopRequested = false;
+        sequenceAutoRun = false;
+        return;
+    }
+
+    if (sequenceStopRequested) {
+        player.sendSystemMessage(Component.literal(
+                "Stopped auto-run. " + (sequence.size() - sequenceIndex) + " step(s) remaining."));
+        sequence = null;
+        sequenceIndex = -1;
+        sequenceStopRequested = false;
+        sequenceAutoRun = false;
+        return;
+    }
+
+    if (sequenceAutoRun) {
+        autoRunDelayTicks = 1;
+    } else {
+        BuildAction next = sequence.get(sequenceIndex);
+        player.sendSystemMessage(Component.literal("[" + getActiveSequenceName() + "] Next: " + next.describe()));
+    }
+}
 
     private abstract static class BuildAction {
         void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {}
@@ -751,6 +779,122 @@ public enum SlotType {
             return "check if " + axis.name() + " is divisible by " + divisor + " and set slot to " + (slotToSelect + 1);
         }
     }
+
+
+private class PlaceFlowerPotAction extends BuildAction {
+    private final int potSlot;
+    private final int flowerSlot;
+    private enum Stage { PLACE_POT, PLANT_FLOWER }
+    private Stage stage = Stage.PLACE_POT;
+    private BlockPos targetPotPos;
+    private int ticks = 0;
+
+    /**
+     * @param potSlotOneIndexed Hotbar slot with Flower Pot (1-9)
+     * @param flowerSlotOneIndexed Hotbar slot with Flower/Plant (1-9)
+     */
+    PlaceFlowerPotAction(int potSlotOneIndexed, int flowerSlotOneIndexed) {
+        this.potSlot = Mth.clamp(potSlotOneIndexed - 1, 0, 8);
+        this.flowerSlot = Mth.clamp(flowerSlotOneIndexed - 1, 0, 8);
+    }
+
+    @Override
+    void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        stage = Stage.PLACE_POT;
+        ticks = 0;
+        targetPotPos = null;
+    }
+
+    @Override
+    boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        ticks++;
+        net.minecraft.client.multiplayer.MultiPlayerGameMode gameMode = 
+                net.minecraft.client.Minecraft.getInstance().gameMode;
+        if (gameMode == null) return true;
+
+        switch (stage) {
+            case PLACE_POT: {
+                BlockHitResult hitResult;
+                if (lookedAtHit != null) {
+                    hitResult = lookedAtHit;
+                    lookedAtHit = null;
+                } else {
+                    BlockPos target = player.blockPosition().relative(player.getDirection(), 1);
+                    hitResult = findClickableFace(level, target);
+                    if (hitResult == null) {
+                        player.sendSystemMessage(Component.literal("No adjacent block to place pot against."));
+                        return true;
+                    }
+                }
+
+                targetPotPos = hitResult.getBlockPos().relative(hitResult.getDirection());
+
+                if (!level.getBlockState(targetPotPos).canBeReplaced()) {
+                    player.sendSystemMessage(Component.literal("Target position for flower pot is occupied."));
+                    return true;
+                }
+
+                ItemStack potStack = player.getInventory().getItem(potSlot);
+                if (potStack.isEmpty() || !potStack.is(net.minecraft.world.item.Items.FLOWER_POT)) {
+                    player.sendSystemMessage(Component.literal("Hotbar slot " + (potSlot + 1) + " does not have a Flower Pot."));
+                    return true;
+                }
+
+                // Place Flower Pot
+                int previousSlot = player.getInventory().getSelectedSlot();
+                player.getInventory().setSelectedSlot(potSlot);
+                gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
+                player.getInventory().setSelectedSlot(previousSlot);
+
+                stage = Stage.PLANT_FLOWER;
+                return false;
+            }
+
+            case PLANT_FLOWER: {
+                if (targetPotPos == null) return true;
+
+                // Wait 1 tick for server/world block state update to reflect the pot
+                if (ticks < 2) return false;
+
+                net.minecraft.world.level.block.state.BlockState state = level.getBlockState(targetPotPos);
+                if (!state.is(net.minecraft.world.level.block.Blocks.FLOWER_POT)) {
+                    player.sendSystemMessage(Component.literal("Flower pot placement not recognized yet."));
+                    return true;
+                }
+
+                ItemStack flowerStack = player.getInventory().getItem(flowerSlot);
+                if (flowerStack.isEmpty()) {
+                    player.sendSystemMessage(Component.literal("Hotbar slot " + (flowerSlot + 1) + " is empty; pot placed empty."));
+                    return true;
+                }
+
+                // Right click flower pot with plant item
+                BlockHitResult potHit = buildHitResult(targetPotPos, Direction.UP);
+                int previousSlot = player.getInventory().getSelectedSlot();
+                player.getInventory().setSelectedSlot(flowerSlot);
+                gameMode.useItemOn(player, InteractionHand.MAIN_HAND, potHit);
+                player.getInventory().setSelectedSlot(previousSlot);
+
+                return true;
+            }
+        }
+
+        return true;
+    }
+
+    @Override
+    String describe() {
+        return "place pot from slot " + (potSlot + 1) + " and plant flower from slot " + (flowerSlot + 1);
+    }
+}
+
+
+
+
+
+
+
+
 
     private class EatAction extends BuildAction {
     private final int slotToUse;
