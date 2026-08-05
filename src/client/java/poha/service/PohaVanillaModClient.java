@@ -273,8 +273,26 @@ public class PohaVanillaModClient implements ClientModInitializer {
     }
     private java.util.List<BuildAction> testSequence() {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
-        steps.add(craftWoodenShovels(2));
-        
+        steps.add(centerAndAlign());
+        steps.add(lookForPlace());
+        steps.add(extractFromChest(6));
+        steps.add(moveLeft(1));
+        steps.add(centerAndAlign());
+        steps.add(lookForPlace());
+        steps.add(extractFromChest(7));
+        steps.add(moveLeft(1));
+        steps.add(centerAndAlign());
+        steps.add(lookForPlace());
+        steps.add(craftWoodenShovels(18));
+        steps.add(moveLeft(1));
+        steps.add(centerAndAlign());
+        steps.add(lookForPlace());
+        steps.add(offloadWoodenShovels());
+        steps.add(centerAndAlign());
+        steps.add(moveRight(1));
+        steps.add(moveRight(1));
+        steps.add(moveRight(1));
+        steps.add(moveRight(1));
         return steps;
     }
 
@@ -547,6 +565,10 @@ private BuildAction extractFromChest() {
 // Craft X number of wooden shovels at a crafting table in front of you
 private BuildAction craftWoodenShovels(int count) {
     return new CraftShovelsAction(count);
+}
+// Offload all wooden shovels from inventory/hotbar to chest in front
+private BuildAction offloadWoodenShovels() {
+    return new OffloadWoodenShovelsAction();
 }
 
     private BlockHitResult lookedAtHit = null;
@@ -987,6 +1009,112 @@ private class CraftShovelsAction extends BuildAction {
         return "craft " + targetShovelCount + " wooden shovel(s) using crafting table";
     }
 }
+
+private class OffloadWoodenShovelsAction extends BuildAction {
+    private enum Stage { OPEN_CHEST, OFFLOAD_SHOVELS, CLOSE_CHEST }
+    private Stage stage = Stage.OPEN_CHEST;
+
+    private int timeoutTicks = 0;
+    private static final int MAX_TIMEOUT_TICKS = 100;
+
+    @Override
+    void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        stage = Stage.OPEN_CHEST;
+        timeoutTicks = 0;
+    }
+
+    @Override
+    boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        timeoutTicks++;
+        if (timeoutTicks >= MAX_TIMEOUT_TICKS) {
+            player.sendSystemMessage(Component.literal("Offloading wooden shovels timed out. Aborting sequence."));
+            closeContainerIfOpen(player);
+            sequenceAbortRequested = true;
+            return true;
+        }
+
+        net.minecraft.client.multiplayer.MultiPlayerGameMode gameMode = 
+                net.minecraft.client.Minecraft.getInstance().gameMode;
+        if (gameMode == null) return true;
+
+        switch (stage) {
+            case OPEN_CHEST: {
+                BlockHitResult hitResult;
+                if (lookedAtHit != null) {
+                    hitResult = lookedAtHit;
+                    lookedAtHit = null;
+                } else {
+                    BlockPos chestPos = player.blockPosition().relative(player.getDirection(), 1);
+                    hitResult = findClickableFace(level, chestPos);
+                    if (hitResult == null) {
+                        player.sendSystemMessage(Component.literal("No chest in front to open."));
+                        sequenceAbortRequested = true;
+                        return true;
+                    }
+                }
+
+                gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
+                stage = Stage.OFFLOAD_SHOVELS;
+                return false;
+            }
+
+            case OFFLOAD_SHOVELS: {
+                // Wait until chest container menu opens
+                if (player.containerMenu == player.inventoryMenu) {
+                    return false;
+                }
+
+                var containerMenu = player.containerMenu;
+                int containerId = containerMenu.containerId;
+
+                // Single Chest = 27 slots (0..26), Double Chest = 54 slots (0..53)
+                int playerSlotsStart = containerMenu.slots.size() - 36;
+                int offloadedCount = 0;
+
+                // Iterate through player inventory & hotbar slots within the container menu
+                for (int containerSlot = playerSlotsStart; containerSlot < containerMenu.slots.size(); containerSlot++) {
+                    ItemStack stack = containerMenu.getSlot(containerSlot).getItem();
+                    
+                    if (!stack.isEmpty() && stack.is(net.minecraft.world.item.Items.WOODEN_SHOVEL)) {
+                        // Quick-move (Shift-click) shovel into chest
+                        gameMode.handleContainerInput(containerId, containerSlot, 0, ContainerInput.QUICK_MOVE, player);
+                        offloadedCount++;
+                    }
+                }
+
+                player.sendSystemMessage(Component.literal(
+                        "Offloaded " + offloadedCount + " wooden shovel stack(s) into chest."));
+
+                closeContainerIfOpen(player);
+                stage = Stage.CLOSE_CHEST;
+                return true;
+            }
+
+            case CLOSE_CHEST:
+                return true;
+        }
+
+        return true;
+    }
+
+    private void closeContainerIfOpen(LocalPlayer player) {
+        if (player.containerMenu != player.inventoryMenu) {
+            player.closeContainer();
+        }
+    }
+
+    @Override
+    void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        closeContainerIfOpen(player);
+        super.end(player, level, options);
+    }
+
+    @Override
+    String describe() {
+        return "offload all wooden shovels into chest";
+    }
+}
+
 
 
 private class ExtractFromChestAction extends BuildAction {
