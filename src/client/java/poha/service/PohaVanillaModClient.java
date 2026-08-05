@@ -256,6 +256,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
         registeredSequences.add(new NamedSequence("Drop64", this::dropSequence64));
         registeredSequences.add(new NamedSequence("Drop64batch", this::dropSequence64Multiple));
         registeredSequences.add(new NamedSequence("plot", this::plotSequence));
+        registeredSequences.add(new NamedSequence("refillfromchest", this::fillFromChestSequence));
         // Add additional sequences here in the future:
         // registeredSequences.add(new NamedSequence("Bridge Builder", this::buildBridgeSequence));
     }
@@ -290,6 +291,13 @@ public class PohaVanillaModClient implements ClientModInitializer {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
         steps.add(dropHotbar(6, 1));
         steps.add(eat(9));
+        
+        return steps;
+    }
+        private java.util.List<BuildAction> fillFromChestSequence() {
+        java.util.List<BuildAction> steps = new java.util.ArrayList<>();
+        steps.add(extractFromChest(6));
+
         
         return steps;
     }
@@ -526,6 +534,15 @@ private BuildAction dropInventory(int slotOneIndexed) {
 // Place pot from potSlot and immediately insert flower from flowerSlot (both 1-indexed)
 private BuildAction placePotWithFlower(int potSlotOneIndexed, int flowerSlotOneIndexed) {
     return new PlaceFlowerPotAction(potSlotOneIndexed, flowerSlotOneIndexed);
+}
+// Extract items from chest to fill specified hotbar slot (1-9)
+private BuildAction extractFromChest(int slotOneIndexed) {
+    return new ExtractFromChestAction(slotOneIndexed);
+}
+
+// Extract items from chest to fill current target hotbar slot
+private BuildAction extractFromChest() {
+    return new ExtractFromChestAction();
 }
 
     private BlockHitResult lookedAtHit = null;
@@ -780,6 +797,162 @@ public enum SlotType {
         }
     }
 
+private class ExtractFromChestAction extends BuildAction {
+    private final int targetSlot;
+    private static final int FULL_STACK = 64;
+
+    private enum Stage { OPEN_CHEST, EXTRACT_ITEMS, CLOSE_CHEST }
+    private Stage stage = Stage.OPEN_CHEST;
+    
+    private int timeoutTicks = 0;
+    private static final int MAX_TIMEOUT_TICKS = 100; // ~5 seconds safety fallback
+
+    ExtractFromChestAction(int slotOneIndexed) {
+        this.targetSlot = Mth.clamp(slotOneIndexed - 1, 0, 8);
+    }
+
+    ExtractFromChestAction() {
+        this.targetSlot = targetHotbarSlot;
+    }
+
+    @Override
+    void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        stage = Stage.OPEN_CHEST;
+        timeoutTicks = 0;
+    }
+
+    @Override
+    boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        timeoutTicks++;
+        if (timeoutTicks >= MAX_TIMEOUT_TICKS) {
+            player.sendSystemMessage(Component.literal("Chest extraction timed out. Aborting sequence."));
+            closeChestIfOpen(player);
+            sequenceAbortRequested = true;
+            return true;
+        }
+
+        net.minecraft.client.multiplayer.MultiPlayerGameMode gameMode = 
+                net.minecraft.client.Minecraft.getInstance().gameMode;
+        if (gameMode == null) return true;
+
+        switch (stage) {
+            case OPEN_CHEST: {
+                ItemStack targetStack = player.getInventory().getItem(targetSlot);
+                if (targetStack.isEmpty()) {
+                    player.sendSystemMessage(Component.literal(
+                            "Hotbar slot " + (targetSlot + 1) + " is empty — cannot infer item to extract. Aborting sequence."));
+                    sequenceAbortRequested = true;
+                    return true;
+                }
+
+                if (targetStack.getCount() >= FULL_STACK) {
+                    player.sendSystemMessage(Component.literal(
+                            "Hotbar slot " + (targetSlot + 1) + " is already full."));
+                    return true;
+                }
+
+                BlockHitResult hitResult;
+                if (lookedAtHit != null) {
+                    hitResult = lookedAtHit;
+                    lookedAtHit = null;
+                } else {
+                    BlockPos chestPos = player.blockPosition().relative(player.getDirection(), 1);
+                    hitResult = findClickableFace(level, chestPos);
+                    if (hitResult == null) {
+                        player.sendSystemMessage(Component.literal("No chest in front to open."));
+                        sequenceAbortRequested = true;
+                        return true;
+                    }
+                }
+
+                // Interact with chest
+                gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
+                stage = Stage.EXTRACT_ITEMS;
+                return false;
+            }
+
+            case EXTRACT_ITEMS: {
+    // Wait until chest container menu opens
+    if (player.containerMenu == player.inventoryMenu) {
+        return false; // Still waiting for container to open
+    }
+
+    var containerMenu = player.containerMenu;
+    int containerId = containerMenu.containerId;
+    ItemStack targetStack = player.getInventory().getItem(targetSlot);
+    net.minecraft.world.item.Item targetItem = targetStack.getItem();
+
+    // Player hotbar slots start after chest slots in container layout
+    // (Single Chest = 27 slots [0..26], Double Chest = 54 slots [0..53])
+    int chestSize = containerMenu.slots.size() - 36; 
+    int hotbarContainerSlotStart = containerMenu.slots.size() - 9;
+    int targetContainerSlot = hotbarContainerSlotStart + targetSlot;
+
+    while (player.getInventory().getItem(targetSlot).getCount() < FULL_STACK) {
+        int matchingChestSlot = -1;
+
+        for (int i = 0; i < chestSize; i++) {
+            ItemStack chestStack = containerMenu.getSlot(i).getItem();
+            if (!chestStack.isEmpty() && chestStack.getItem() == targetItem) {
+                matchingChestSlot = i;
+                break;
+            }
+        }
+
+        if (matchingChestSlot == -1) {
+            // FIX: Use targetStack.getHoverName().getString() here
+            player.sendSystemMessage(Component.literal(
+                    "Could not find enough " + targetStack.getHoverName().getString() + 
+                    " in chest to reach 64 (currently " + 
+                    player.getInventory().getItem(targetSlot).getCount() + "). Aborting sequence."));
+            closeChestIfOpen(player);
+            sequenceAbortRequested = true;
+            return true;
+        }
+
+        // Pick up matching item stack from chest slot
+        gameMode.handleContainerInput(containerId, matchingChestSlot, 0, ContainerInput.PICKUP, player);
+        // Place items into hotbar slot
+        gameMode.handleContainerInput(containerId, targetContainerSlot, 0, ContainerInput.PICKUP, player);
+
+        // If leftover items in cursor, deposit back into chest slot
+        if (!containerMenu.getCarried().isEmpty()) {
+            gameMode.handleContainerInput(containerId, matchingChestSlot, 0, ContainerInput.PICKUP, player);
+        }
+    }
+
+    player.sendSystemMessage(Component.literal(
+            "Hotbar slot " + (targetSlot + 1) + " refilled to 64 from chest."));
+    
+    closeChestIfOpen(player);
+    stage = Stage.CLOSE_CHEST;
+    return true;
+}
+
+            case CLOSE_CHEST:
+                return true;
+        }
+
+        return true;
+    }
+
+    private void closeChestIfOpen(LocalPlayer player) {
+        if (player.containerMenu != player.inventoryMenu) {
+            player.closeContainer();
+        }
+    }
+
+    @Override
+    void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        closeChestIfOpen(player);
+        super.end(player, level, options);
+    }
+
+    @Override
+    String describe() {
+        return "refill hotbar slot " + (targetSlot + 1) + " to 64 from chest";
+    }
+}
 
 private class PlaceFlowerPotAction extends BuildAction {
     private final int potSlot;
