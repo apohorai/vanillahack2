@@ -574,6 +574,10 @@ private BuildAction offloadWoodenShovels() {
 private BuildAction craftWoodenSwords(int count) {
     return new CraftSwordsAction(count);
 }
+// Offload all wooden swords from inventory/hotbar to chest in front
+private BuildAction offloadWoodenSwords() {
+    return new OffloadWoodenSwordsAction();
+}
     private BlockHitResult lookedAtHit = null;
 
     private void runSingleAction(BuildAction action, LocalPlayer player, Level level, net.minecraft.client.Options options) {
@@ -1019,6 +1023,108 @@ private class CraftSwordsAction extends BuildAction {
         return "craft " + targetSwordCount + " wooden sword(s) using crafting table";
     }
 }
+
+private class OffloadWoodenSwordsAction extends BuildAction {
+    private enum Stage { OPEN_CHEST, OFFLOAD_SWORDS, CLOSE_CHEST }
+    private Stage stage = Stage.OPEN_CHEST;
+
+    private int timeoutTicks = 0;
+    private static final int MAX_TIMEOUT_TICKS = 100;
+
+    @Override
+    void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        stage = Stage.OPEN_CHEST;
+        timeoutTicks = 0;
+    }
+
+    @Override
+    boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        timeoutTicks++;
+        if (timeoutTicks >= MAX_TIMEOUT_TICKS) {
+            player.sendSystemMessage(Component.literal("Offloading wooden swords timed out. Aborting sequence."));
+            closeContainerIfOpen(player);
+            sequenceAbortRequested = true;
+            return true;
+        }
+
+        net.minecraft.client.multiplayer.MultiPlayerGameMode gameMode = 
+                net.minecraft.client.Minecraft.getInstance().gameMode;
+        if (gameMode == null) return true;
+
+        switch (stage) {
+            case OPEN_CHEST: {
+                BlockHitResult hitResult;
+                if (lookedAtHit != null) {
+                    hitResult = lookedAtHit;
+                    lookedAtHit = null;
+                } else {
+                    BlockPos chestPos = player.blockPosition().relative(player.getDirection(), 1);
+                    hitResult = findClickableFace(level, chestPos);
+                    if (hitResult == null) {
+                        player.sendSystemMessage(Component.literal("No chest in front to open."));
+                        sequenceAbortRequested = true;
+                        return true;
+                    }
+                }
+
+                gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
+                stage = Stage.OFFLOAD_SWORDS;
+                return false;
+            }
+
+            case OFFLOAD_SWORDS: {
+                if (player.containerMenu == player.inventoryMenu) {
+                    return false; // Wait until chest UI opens
+                }
+
+                var containerMenu = player.containerMenu;
+                int containerId = containerMenu.containerId;
+
+                int playerSlotsStart = containerMenu.slots.size() - 36;
+                int offloadedCount = 0;
+
+                for (int containerSlot = playerSlotsStart; containerSlot < containerMenu.slots.size(); containerSlot++) {
+                    ItemStack stack = containerMenu.getSlot(containerSlot).getItem();
+                    
+                    if (!stack.isEmpty() && stack.is(net.minecraft.world.item.Items.WOODEN_SWORD)) {
+                        gameMode.handleContainerInput(containerId, containerSlot, 0, ContainerInput.QUICK_MOVE, player);
+                        offloadedCount++;
+                    }
+                }
+
+                player.sendSystemMessage(Component.literal(
+                        "Offloaded " + offloadedCount + " wooden sword stack(s) into chest."));
+
+                closeContainerIfOpen(player);
+                stage = Stage.CLOSE_CHEST;
+                return true;
+            }
+
+            case CLOSE_CHEST:
+                return true;
+        }
+
+        return true;
+    }
+
+    private void closeContainerIfOpen(LocalPlayer player) {
+        if (player.containerMenu != player.inventoryMenu) {
+            player.closeContainer();
+        }
+    }
+
+    @Override
+    void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        closeContainerIfOpen(player);
+        super.end(player, level, options);
+    }
+
+    @Override
+    String describe() {
+        return "offload all wooden swords into chest";
+    }
+}
+
 
 
 private class CraftShovelsAction extends BuildAction {
