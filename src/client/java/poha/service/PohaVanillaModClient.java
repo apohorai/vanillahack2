@@ -570,7 +570,10 @@ private BuildAction craftWoodenShovels(int count) {
 private BuildAction offloadWoodenShovels() {
     return new OffloadWoodenShovelsAction();
 }
-
+// Craft X number of wooden swords at a crafting table in front of you
+private BuildAction craftWoodenSwords(int count) {
+    return new CraftSwordsAction(count);
+}
     private BlockHitResult lookedAtHit = null;
 
     private void runSingleAction(BuildAction action, LocalPlayer player, Level level, net.minecraft.client.Options options) {
@@ -822,6 +825,201 @@ public enum SlotType {
             return "check if " + axis.name() + " is divisible by " + divisor + " and set slot to " + (slotToSelect + 1);
         }
     }
+
+private class CraftSwordsAction extends BuildAction {
+    private final int targetSwordCount;
+    private int swordsCraftedSoFar = 0;
+
+    private enum Stage { OPEN_TABLE, CRAFT, CLOSE_TABLE }
+    private Stage stage = Stage.OPEN_TABLE;
+
+    private int timeoutTicks = 0;
+    private static final int MAX_TIMEOUT_TICKS = 100;
+
+    CraftSwordsAction(int count) {
+        this.targetSwordCount = Math.max(1, count);
+    }
+
+    @Override
+    void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        stage = Stage.OPEN_TABLE;
+        swordsCraftedSoFar = 0;
+        timeoutTicks = 0;
+    }
+
+    @Override
+    boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        timeoutTicks++;
+        if (timeoutTicks >= MAX_TIMEOUT_TICKS) {
+            player.sendSystemMessage(Component.literal("Crafting wooden swords timed out. Aborting sequence."));
+            closeContainerIfOpen(player);
+            sequenceAbortRequested = true;
+            return true;
+        }
+
+        net.minecraft.client.multiplayer.MultiPlayerGameMode gameMode = 
+                net.minecraft.client.Minecraft.getInstance().gameMode;
+        if (gameMode == null) return true;
+
+        switch (stage) {
+            case OPEN_TABLE: {
+                BlockHitResult hitResult;
+                if (lookedAtHit != null) {
+                    hitResult = lookedAtHit;
+                    lookedAtHit = null;
+                } else {
+                    BlockPos tablePos = player.blockPosition().relative(player.getDirection(), 1);
+                    hitResult = findClickableFace(level, tablePos);
+                    if (hitResult == null) {
+                        player.sendSystemMessage(Component.literal("No Crafting Table in front to open."));
+                        sequenceAbortRequested = true;
+                        return true;
+                    }
+                }
+
+                gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
+                stage = Stage.CRAFT;
+                return false;
+            }
+
+            case CRAFT: {
+                if (player.containerMenu == player.inventoryMenu) {
+                    return false;
+                }
+
+                var menu = player.containerMenu;
+                int containerId = menu.containerId;
+
+                while (swordsCraftedSoFar < targetSwordCount) {
+                    clearGrid(gameMode, containerId, player);
+
+                    if (!prepareSwordRecipe(gameMode, containerId, menu, player)) {
+                        player.sendSystemMessage(Component.literal(
+                                "Lacking materials to craft wooden sword (" + swordsCraftedSoFar + "/" + targetSwordCount + " crafted). Aborting sequence."));
+                        closeContainerIfOpen(player);
+                        sequenceAbortRequested = true;
+                        return true;
+                    }
+
+                    // Shift-click result slot (0)
+                    gameMode.handleContainerInput(containerId, 0, 0, ContainerInput.QUICK_MOVE, player);
+                    swordsCraftedSoFar++;
+                }
+
+                player.sendSystemMessage(Component.literal(
+                        "Successfully crafted " + swordsCraftedSoFar + " wooden sword(s)."));
+                
+                closeContainerIfOpen(player);
+                stage = Stage.CLOSE_TABLE;
+                return true;
+            }
+
+            case CLOSE_TABLE:
+                return true;
+        }
+
+        return true;
+    }
+
+    private void clearGrid(net.minecraft.client.multiplayer.MultiPlayerGameMode gameMode, int containerId, LocalPlayer player) {
+        for (int i = 1; i <= 9; i++) {
+            if (!player.containerMenu.getSlot(i).getItem().isEmpty()) {
+                gameMode.handleContainerInput(containerId, i, 0, ContainerInput.QUICK_MOVE, player);
+            }
+        }
+    }
+
+    private boolean prepareSwordRecipe(net.minecraft.client.multiplayer.MultiPlayerGameMode gameMode, int containerId, net.minecraft.world.inventory.AbstractContainerMenu menu, LocalPlayer player) {
+        // Wooden Sword Recipe Layout:
+        // Slot 2 (Top center) = 1 Plank
+        // Slot 5 (Middle center) = 1 Plank
+        // Slot 8 (Bottom center) = 1 Stick
+
+        // 1. Check/Craft Planks for Slots 2 & 5
+        int plankSlot = findItemSlotInMenu(menu, item -> item.is(net.minecraft.tags.ItemTags.PLANKS));
+        if (plankSlot == -1) {
+            if (!craftPlanksFromLogs(gameMode, containerId, menu, player)) return false;
+            plankSlot = findItemSlotInMenu(menu, item -> item.is(net.minecraft.tags.ItemTags.PLANKS));
+            if (plankSlot == -1) return false;
+        }
+
+        // Place 1 Plank in Slot 2 and 1 Plank in Slot 5
+        gameMode.handleContainerInput(containerId, plankSlot, 0, ContainerInput.PICKUP, player);
+        gameMode.handleContainerInput(containerId, 2, 1, ContainerInput.PICKUP, player);
+        gameMode.handleContainerInput(containerId, 5, 1, ContainerInput.PICKUP, player);
+        gameMode.handleContainerInput(containerId, plankSlot, 0, ContainerInput.PICKUP, player);
+
+        // 2. Check/Craft Stick for Slot 8
+        int stickSlot = findItemSlotInMenu(menu, item -> item.is(net.minecraft.world.item.Items.STICK));
+        if (stickSlot == -1) {
+            if (!craftSticksFromPlanks(gameMode, containerId, menu, player)) return false;
+            stickSlot = findItemSlotInMenu(menu, item -> item.is(net.minecraft.world.item.Items.STICK));
+            if (stickSlot == -1) return false;
+        }
+
+        // Place 1 Stick in Slot 8
+        gameMode.handleContainerInput(containerId, stickSlot, 0, ContainerInput.PICKUP, player);
+        gameMode.handleContainerInput(containerId, 8, 1, ContainerInput.PICKUP, player);
+        gameMode.handleContainerInput(containerId, stickSlot, 0, ContainerInput.PICKUP, player);
+
+        return true;
+    }
+
+    private boolean craftPlanksFromLogs(net.minecraft.client.multiplayer.MultiPlayerGameMode gameMode, int containerId, net.minecraft.world.inventory.AbstractContainerMenu menu, LocalPlayer player) {
+        int logSlot = findItemSlotInMenu(menu, item -> item.is(net.minecraft.tags.ItemTags.LOGS));
+        if (logSlot == -1) return false;
+
+        gameMode.handleContainerInput(containerId, logSlot, 0, ContainerInput.PICKUP, player);
+        gameMode.handleContainerInput(containerId, 5, 1, ContainerInput.PICKUP, player);
+        gameMode.handleContainerInput(containerId, logSlot, 0, ContainerInput.PICKUP, player);
+
+        gameMode.handleContainerInput(containerId, 0, 0, ContainerInput.QUICK_MOVE, player);
+        clearGrid(gameMode, containerId, player);
+        return true;
+    }
+
+    private boolean craftSticksFromPlanks(net.minecraft.client.multiplayer.MultiPlayerGameMode gameMode, int containerId, net.minecraft.world.inventory.AbstractContainerMenu menu, LocalPlayer player) {
+        int plankSlot = findItemSlotInMenu(menu, item -> item.is(net.minecraft.tags.ItemTags.PLANKS));
+        if (plankSlot == -1) return false;
+
+        gameMode.handleContainerInput(containerId, plankSlot, 0, ContainerInput.PICKUP, player);
+        gameMode.handleContainerInput(containerId, 2, 1, ContainerInput.PICKUP, player);
+        gameMode.handleContainerInput(containerId, 5, 1, ContainerInput.PICKUP, player);
+        gameMode.handleContainerInput(containerId, plankSlot, 0, ContainerInput.PICKUP, player);
+
+        gameMode.handleContainerInput(containerId, 0, 0, ContainerInput.QUICK_MOVE, player);
+        clearGrid(gameMode, containerId, player);
+        return true;
+    }
+
+    private int findItemSlotInMenu(net.minecraft.world.inventory.AbstractContainerMenu menu, java.util.function.Predicate<ItemStack> matcher) {
+        for (int i = 10; i < menu.slots.size(); i++) {
+            ItemStack stack = menu.getSlot(i).getItem();
+            if (!stack.isEmpty() && matcher.test(stack)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private void closeContainerIfOpen(LocalPlayer player) {
+        if (player.containerMenu != player.inventoryMenu) {
+            player.closeContainer();
+        }
+    }
+
+    @Override
+    void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        closeContainerIfOpen(player);
+        super.end(player, level, options);
+    }
+
+    @Override
+    String describe() {
+        return "craft " + targetSwordCount + " wooden sword(s) using crafting table";
+    }
+}
+
 
 private class CraftShovelsAction extends BuildAction {
     private final int targetShovelCount;
