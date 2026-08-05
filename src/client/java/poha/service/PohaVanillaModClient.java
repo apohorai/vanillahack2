@@ -252,7 +252,8 @@ public class PohaVanillaModClient implements ClientModInitializer {
     private void registerSequences() {
         registeredSequences.clear();
         registeredSequences.add(new NamedSequence("Tunnel Builder", this::buildTunnelBuilderSequence));
-        registeredSequences.add(new NamedSequence("Test", this::testSequence));
+        registeredSequences.add(new NamedSequence("Shovel", this::shovelSequence));
+        registeredSequences.add(new NamedSequence("Sword", this::swordSequence));
         registeredSequences.add(new NamedSequence("Drop", this::dropSequence));
         registeredSequences.add(new NamedSequence("Drop64", this::dropSequence64));
         registeredSequences.add(new NamedSequence("Drop64batch", this::dropSequence64Multiple));
@@ -271,7 +272,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
         if (registeredSequences.isEmpty()) return "None";
         return registeredSequences.get(activeSequenceIndex).name();
     }
-    private java.util.List<BuildAction> testSequence() {
+    private java.util.List<BuildAction> shovelSequence() {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
         steps.add(centerAndAlign());
         steps.add(lookForPlace());
@@ -288,6 +289,30 @@ public class PohaVanillaModClient implements ClientModInitializer {
         steps.add(centerAndAlign());
         steps.add(lookForPlace());
         steps.add(offloadWoodenShovels());
+        steps.add(centerAndAlign());
+        steps.add(moveRight(1));
+        steps.add(moveRight(1));
+        steps.add(moveRight(1));
+        steps.add(moveRight(1));
+        return steps;
+    }
+    private java.util.List<BuildAction> swordSequence() {
+        java.util.List<BuildAction> steps = new java.util.ArrayList<>();
+        steps.add(centerAndAlign());
+        steps.add(lookForPlace());
+        steps.add(extractFromChest(6));
+        steps.add(moveLeft(1));
+        steps.add(centerAndAlign());
+        steps.add(lookForPlace());
+        steps.add(extractFromChest(7));
+        steps.add(moveLeft(1));
+        steps.add(centerAndAlign());
+        steps.add(lookForPlace());
+        steps.add(craftWoodenSwords(18));
+        steps.add(moveLeft(1));
+        steps.add(centerAndAlign());
+        steps.add(lookForPlace());
+        steps.add(offloadWoodenSwords());
         steps.add(centerAndAlign());
         steps.add(moveRight(1));
         steps.add(moveRight(1));
