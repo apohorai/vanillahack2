@@ -260,6 +260,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
         registeredSequences.add(new NamedSequence("plot", this::plotSequence));
         registeredSequences.add(new NamedSequence("refillfromchest", this::fillFromChestSequence));
         registeredSequences.add(new NamedSequence("shoot arrow", this::shootArrowSequence));
+        registeredSequences.add(new NamedSequence("Golden boots", this::shieldSequence));
         // Add additional sequences here in the future:
         // registeredSequences.add(new NamedSequence("Bridge Builder", this::buildBridgeSequence));
     }
@@ -329,7 +330,13 @@ public class PohaVanillaModClient implements ClientModInitializer {
         
         return steps;
     }
+    private java.util.List<BuildAction> shieldSequence() {
+        java.util.List<BuildAction> steps = new java.util.ArrayList<>();
 
+        steps.add(craftGoldenBoots(placeCountdown));
+        
+        return steps;
+    }
         private java.util.List<BuildAction> shootArrowSequence() {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
         steps.add(shootArrow());
@@ -642,7 +649,10 @@ private BuildAction delayTicks(int ticks) {
 private BuildAction delaySeconds(double seconds) { 
     return new DelayAction((int) Math.round(seconds * 20.0)); 
 }
-
+// Craft X number of golden boots at a crafting table in front of you
+private BuildAction craftGoldenBoots(int count) {
+    return new CraftGoldenBootsAction(count);
+}
 
     private BlockHitResult lookedAtHit = null;
 
@@ -741,7 +751,157 @@ private BuildAction delaySeconds(double seconds) {
         player.sendSystemMessage(Component.literal("[" + getActiveSequenceName() + "] Next: " + next.describe()));
     }
 }
+private class CraftGoldenBootsAction extends BuildAction {
+    private final int targetBootCount;
+    private int bootsCraftedSoFar = 0;
 
+    private enum Stage { OPEN_TABLE, CRAFT, CLOSE_TABLE }
+    private Stage stage = Stage.OPEN_TABLE;
+
+    private int timeoutTicks = 0;
+    private static final int MAX_TIMEOUT_TICKS = 100;
+
+    CraftGoldenBootsAction(int count) {
+        this.targetBootCount = Math.max(1, count);
+    }
+
+    @Override
+    void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        stage = Stage.OPEN_TABLE;
+        bootsCraftedSoFar = 0;
+        timeoutTicks = 0;
+    }
+
+    @Override
+    boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        timeoutTicks++;
+        if (timeoutTicks >= MAX_TIMEOUT_TICKS) {
+            player.sendSystemMessage(Component.literal("Crafting golden boots timed out. Aborting sequence."));
+            closeContainerIfOpen(player);
+            sequenceAbortRequested = true;
+            return true;
+        }
+
+        net.minecraft.client.multiplayer.MultiPlayerGameMode gameMode = 
+                net.minecraft.client.Minecraft.getInstance().gameMode;
+        if (gameMode == null) return true;
+
+        switch (stage) {
+            case OPEN_TABLE: {
+                BlockHitResult hitResult;
+                if (lookedAtHit != null) {
+                    hitResult = lookedAtHit;
+                    lookedAtHit = null;
+                } else {
+                    BlockPos tablePos = player.blockPosition().relative(player.getDirection(), 1);
+                    hitResult = findClickableFace(level, tablePos);
+                    if (hitResult == null) {
+                        player.sendSystemMessage(Component.literal("No Crafting Table in front to open."));
+                        sequenceAbortRequested = true;
+                        return true;
+                    }
+                }
+
+                gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
+                stage = Stage.CRAFT;
+                return false;
+            }
+
+            case CRAFT: {
+                if (player.containerMenu == player.inventoryMenu) {
+                    return false;
+                }
+
+                var menu = player.containerMenu;
+                int containerId = menu.containerId;
+
+                while (bootsCraftedSoFar < targetBootCount) {
+                    clearGrid(gameMode, containerId, player);
+
+                    if (!prepareGoldenBootsRecipe(gameMode, containerId, menu, player)) {
+                        player.sendSystemMessage(Component.literal(
+                                "Lacking Gold Ingots to craft golden boots (" + bootsCraftedSoFar + "/" + targetBootCount + " crafted). Aborting sequence."));
+                        closeContainerIfOpen(player);
+                        sequenceAbortRequested = true;
+                        return true;
+                    }
+
+                    // Shift-click result slot (0)
+                    gameMode.handleContainerInput(containerId, 0, 0, ContainerInput.QUICK_MOVE, player);
+                    bootsCraftedSoFar++;
+                }
+
+                player.sendSystemMessage(Component.literal(
+                        "Successfully crafted " + bootsCraftedSoFar + " golden boot(s)."));
+                
+                closeContainerIfOpen(player);
+                stage = Stage.CLOSE_TABLE;
+                return true;
+            }
+
+            case CLOSE_TABLE:
+                return true;
+        }
+
+        return true;
+    }
+
+    private void clearGrid(net.minecraft.client.multiplayer.MultiPlayerGameMode gameMode, int containerId, LocalPlayer player) {
+        for (int i = 1; i <= 9; i++) {
+            if (!player.containerMenu.getSlot(i).getItem().isEmpty()) {
+                gameMode.handleContainerInput(containerId, i, 0, ContainerInput.QUICK_MOVE, player);
+            }
+        }
+    }
+
+    private boolean prepareGoldenBootsRecipe(net.minecraft.client.multiplayer.MultiPlayerGameMode gameMode, int containerId, net.minecraft.world.inventory.AbstractContainerMenu menu, LocalPlayer player) {
+        // Golden Boots Recipe Layout:
+        // Slot 4 (Middle left)  = 1 Gold Ingot
+        // Slot 6 (Middle right) = 1 Gold Ingot
+        // Slot 7 (Bottom left)  = 1 Gold Ingot
+        // Slot 9 (Bottom right) = 1 Gold Ingot
+
+        int goldSlot = findItemSlotInMenu(menu, item -> item.is(net.minecraft.world.item.Items.GOLD_INGOT));
+        if (goldSlot == -1) return false;
+
+        // Place 1 Gold Ingot each into slots 4, 6, 7, and 9
+        gameMode.handleContainerInput(containerId, goldSlot, 0, ContainerInput.PICKUP, player);
+        gameMode.handleContainerInput(containerId, 4, 1, ContainerInput.PICKUP, player);
+        gameMode.handleContainerInput(containerId, 6, 1, ContainerInput.PICKUP, player);
+        gameMode.handleContainerInput(containerId, 7, 1, ContainerInput.PICKUP, player);
+        gameMode.handleContainerInput(containerId, 9, 1, ContainerInput.PICKUP, player);
+        gameMode.handleContainerInput(containerId, goldSlot, 0, ContainerInput.PICKUP, player);
+
+        return true;
+    }
+
+    private int findItemSlotInMenu(net.minecraft.world.inventory.AbstractContainerMenu menu, java.util.function.Predicate<ItemStack> matcher) {
+        for (int i = 10; i < menu.slots.size(); i++) {
+            ItemStack stack = menu.getSlot(i).getItem();
+            if (!stack.isEmpty() && matcher.test(stack)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private void closeContainerIfOpen(LocalPlayer player) {
+        if (player.containerMenu != player.inventoryMenu) {
+            player.closeContainer();
+        }
+    }
+
+    @Override
+    void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        closeContainerIfOpen(player);
+        super.end(player, level, options);
+    }
+
+    @Override
+    String describe() {
+        return "craft " + targetBootCount + " golden boot(s) using crafting table";
+    }
+}
     private abstract static class BuildAction {
         void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {}
         abstract boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options);
