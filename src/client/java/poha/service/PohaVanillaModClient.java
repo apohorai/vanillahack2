@@ -259,6 +259,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
         registeredSequences.add(new NamedSequence("Drop64batch", this::dropSequence64Multiple));
         registeredSequences.add(new NamedSequence("plot", this::plotSequence));
         registeredSequences.add(new NamedSequence("refillfromchest", this::fillFromChestSequence));
+        registeredSequences.add(new NamedSequence("shoot arrow", this::shootArrowSequence));
         // Add additional sequences here in the future:
         // registeredSequences.add(new NamedSequence("Bridge Builder", this::buildBridgeSequence));
     }
@@ -329,6 +330,12 @@ public class PohaVanillaModClient implements ClientModInitializer {
         return steps;
     }
 
+        private java.util.List<BuildAction> shootArrowSequence() {
+        java.util.List<BuildAction> steps = new java.util.ArrayList<>();
+        steps.add(shootArrow());
+        
+        return steps;
+    }
 
     private java.util.List<BuildAction> dropSequence() {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
@@ -354,14 +361,19 @@ public class PohaVanillaModClient implements ClientModInitializer {
     }
     private java.util.List<BuildAction> dropSequence64Multiple() {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
+        steps.add(refillHotbarSlot(5));
         steps.add(refillHotbarSlot(6));
         steps.add(refillHotbarSlot(7));
-        steps.add(refillHotbarSlot(9));
+        steps.add(refillHotbarSlot(8));
+ //       steps.add(refillHotbarSlot(9));
         
-        steps.add(dropHotbar(6, 40));
-        steps.add(dropHotbar(7, 40));
-        steps.add(eat(9));
-        
+        steps.add(dropHotbar(5, 50));
+        steps.add(dropHotbar(6, 50));
+        steps.add(dropHotbar(7, 50));
+        steps.add(dropHotbar(8, 50));
+ //       steps.add(eat(9));
+        steps.add(openCloseInventory());
+        steps.add(delaySeconds(3));
         return steps;
     }
 
@@ -603,6 +615,35 @@ private BuildAction craftWoodenSwords(int count) {
 private BuildAction offloadWoodenSwords() {
     return new OffloadWoodenSwordsAction();
 }
+// Rapidly shoot an arrow from a specified hotbar slot (1-indexed) at minimum charge time (3 ticks)
+private BuildAction shootArrow(int slotOneIndexed) {
+    return new ShootArrowAction(slotOneIndexed);
+}
+
+// Rapidly shoot an arrow from the active target hotbar slot at minimum charge time (3 ticks)
+private BuildAction shootArrow() {
+    return new ShootArrowAction();
+}
+
+// Shoot an arrow from slot with custom charge ticks (e.g. 20 ticks for full power shot)
+private BuildAction shootArrow(int slotOneIndexed, int chargeTicks) {
+    return new ShootArrowAction(slotOneIndexed, chargeTicks);
+}
+
+private BuildAction openCloseInventory() { 
+    return new OpenCloseInventoryAction(); 
+}
+// Delay by exact tick count
+private BuildAction delayTicks(int ticks) { 
+    return new DelayAction(ticks); 
+}
+
+// Delay by seconds (convenience method)
+private BuildAction delaySeconds(double seconds) { 
+    return new DelayAction((int) Math.round(seconds * 20.0)); 
+}
+
+
     private BlockHitResult lookedAtHit = null;
 
     private void runSingleAction(BuildAction action, LocalPlayer player, Level level, net.minecraft.client.Options options) {
@@ -628,6 +669,8 @@ private BuildAction offloadWoodenSwords() {
     if (!sequenceRunning || sequence == null || sequenceIndex < 0 || sequenceIndex >= sequence.size()) {
         return;
     }
+    
+
 
     BuildAction action = sequence.get(sequenceIndex);
     boolean done = action.tick(player, level, options);
@@ -716,6 +759,92 @@ private BuildAction offloadWoodenSwords() {
         
         abstract String describe();
     }
+
+
+private class DelayAction extends BuildAction {
+    private final int targetTicks;
+    private int elapsedTicks = 0;
+
+    /**
+     * @param ticks Number of Minecraft client ticks to delay (20 ticks = 1 second)
+     */
+    DelayAction(int ticks) {
+        this.targetTicks = Math.max(1, ticks);
+    }
+
+    @Override
+    void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        elapsedTicks = 0;
+    }
+
+    @Override
+    boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        elapsedTicks++;
+        return elapsedTicks >= targetTicks;
+    }
+
+    @Override
+    String describe() {
+        return "wait " + targetTicks + " tick(s) (~" + String.format("%.1f", targetTicks / 20.0) + "s)";
+    }
+}
+
+private class OpenCloseInventoryAction extends BuildAction {
+    private enum Stage { OPEN, CLOSE }
+    private Stage stage = Stage.OPEN;
+    private int delayTicks = 0;
+    private static final int OPEN_DURATION_TICKS = 1; // Number of ticks to keep inventory open
+
+    @Override
+    void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        stage = Stage.OPEN;
+        delayTicks = 0;
+        
+        // Send packet to open the player inventory container
+        net.minecraft.client.multiplayer.MultiPlayerGameMode gameMode = 
+                net.minecraft.client.Minecraft.getInstance().gameMode;
+        if (gameMode != null) {
+            player.sendOpenInventory();
+        }
+    }
+
+    @Override
+    boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        switch (stage) {
+            case OPEN:
+                delayTicks++;
+                // Wait 1 tick so the container menu opens cleanly before closing
+                if (delayTicks >= OPEN_DURATION_TICKS) {
+                    closeContainerIfOpen(player);
+                    stage = Stage.CLOSE;
+                    return true;
+                }
+                return false;
+
+            case CLOSE:
+                return true;
+        }
+        return true;
+    }
+
+    private void closeContainerIfOpen(LocalPlayer player) {
+        if (player.containerMenu != player.inventoryMenu) {
+            player.closeContainer();
+        }
+    }
+
+    @Override
+    void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        closeContainerIfOpen(player);
+        super.end(player, level, options);
+    }
+
+    @Override
+    String describe() {
+        return "open and close inventory";
+    }
+}
+
 
     private class DropItemsAction extends BuildAction {
     private final int targetSlot;
@@ -854,6 +983,76 @@ public enum SlotType {
             return "check if " + axis.name() + " is divisible by " + divisor + " and set slot to " + (slotToSelect + 1);
         }
     }
+private class ShootArrowAction extends BuildAction {
+    private final int bowSlot;
+    private final int chargeTicks;
+    private int ticksHeld = 0;
+    private static final int MINIMUM_BOW_CHARGE_TICKS = 3; // Absolute minimum Minecraft draw time
+
+    /**
+     * @param slotOneIndexed Hotbar slot containing the bow (1-9)
+     * @param chargeTicks How many ticks to hold right-click (default 3 for max speed)
+     */
+    ShootArrowAction(int slotOneIndexed, int chargeTicks) {
+        this.bowSlot = Mth.clamp(slotOneIndexed - 1, 0, 8);
+        this.chargeTicks = Math.max(MINIMUM_BOW_CHARGE_TICKS, chargeTicks);
+    }
+
+    ShootArrowAction(int slotOneIndexed) {
+        this(slotOneIndexed, MINIMUM_BOW_CHARGE_TICKS);
+    }
+
+    ShootArrowAction() {
+        this(targetHotbarSlot + 1, MINIMUM_BOW_CHARGE_TICKS);
+    }
+
+    @Override
+    void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        ticksHeld = 0;
+
+        ItemStack stack = player.getInventory().getItem(bowSlot);
+        if (stack.isEmpty() || !stack.is(net.minecraft.world.item.Items.BOW)) {
+            player.sendSystemMessage(Component.literal("Slot " + (bowSlot + 1) + " does not contain a Bow."));
+            return;
+        }
+
+        // Switch to bow slot and press right-click
+        player.getInventory().setSelectedSlot(bowSlot);
+        options.keyUse.setDown(true);
+    }
+
+    @Override
+    boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        ticksHeld++;
+
+        ItemStack stack = player.getInventory().getItem(bowSlot);
+        if (stack.isEmpty() || !stack.is(net.minecraft.world.item.Items.BOW)) {
+            options.keyUse.setDown(false);
+            return true;
+        }
+
+        // Hold right click until charge threshold is reached
+        if (ticksHeld < chargeTicks) {
+            options.keyUse.setDown(true);
+            return false;
+        }
+
+        // Release right click to release the arrow
+        options.keyUse.setDown(false);
+        return true;
+    }
+
+    @Override
+    void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        options.keyUse.setDown(false);
+        super.end(player, level, options);
+    }
+
+    @Override
+    String describe() {
+        return "rapid-shoot arrow from slot " + (bowSlot + 1) + " (" + chargeTicks + " ticks charge)";
+    }
+}
 
 private class CraftSwordsAction extends BuildAction {
     private final int targetSwordCount;
