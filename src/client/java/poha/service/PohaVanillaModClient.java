@@ -307,17 +307,12 @@ public class PohaVanillaModClient implements ClientModInitializer {
         steps.add(moveLeft(1));
         steps.add(centerAndAlign());
         steps.add(lookForPlace());
-        steps.add(extractFromChest(7));
-        steps.add(moveLeft(1));
-        steps.add(centerAndAlign());
-        steps.add(lookForPlace());
         steps.add(craftGoldenBoots(18));
         steps.add(moveLeft(1));
         steps.add(centerAndAlign());
         steps.add(lookForPlace());
-        steps.add(offloadWoodenShovels());
+        steps.add(offloadGoldenBoots());
         steps.add(centerAndAlign());
-        steps.add(moveRight(1));
         steps.add(moveRight(1));
         steps.add(moveRight(1));
         steps.add(moveRight(1));
@@ -689,6 +684,11 @@ private BuildAction craftGoldenBoots(int count) {
     return new CraftGoldenBootsAction(count);
 }
 
+// Offload all golden boots from inventory/hotbar to chest in front
+private BuildAction offloadGoldenBoots() {
+    return new OffloadGoldenBootsAction();
+}
+
     private BlockHitResult lookedAtHit = null;
 
     private void runSingleAction(BuildAction action, LocalPlayer player, Level level, net.minecraft.client.Options options) {
@@ -955,6 +955,106 @@ private class CraftGoldenBootsAction extends BuildAction {
         abstract String describe();
     }
 
+private class OffloadGoldenBootsAction extends BuildAction {
+    private enum Stage { OPEN_CHEST, OFFLOAD_BOOTS, CLOSE_CHEST }
+    private Stage stage = Stage.OPEN_CHEST;
+
+    private int timeoutTicks = 0;
+    private static final int MAX_TIMEOUT_TICKS = 100;
+
+    @Override
+    void begin(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        stage = Stage.OPEN_CHEST;
+        timeoutTicks = 0;
+    }
+
+    @Override
+    boolean tick(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        timeoutTicks++;
+        if (timeoutTicks >= MAX_TIMEOUT_TICKS) {
+            player.sendSystemMessage(Component.literal("Offloading golden boots timed out. Aborting sequence."));
+            closeContainerIfOpen(player);
+            sequenceAbortRequested = true;
+            return true;
+        }
+
+        net.minecraft.client.multiplayer.MultiPlayerGameMode gameMode = 
+                net.minecraft.client.Minecraft.getInstance().gameMode;
+        if (gameMode == null) return true;
+
+        switch (stage) {
+            case OPEN_CHEST: {
+                BlockHitResult hitResult;
+                if (lookedAtHit != null) {
+                    hitResult = lookedAtHit;
+                    lookedAtHit = null;
+                } else {
+                    BlockPos chestPos = player.blockPosition().relative(player.getDirection(), 1);
+                    hitResult = findClickableFace(level, chestPos);
+                    if (hitResult == null) {
+                        player.sendSystemMessage(Component.literal("No chest in front to open."));
+                        sequenceAbortRequested = true;
+                        return true;
+                    }
+                }
+
+                gameMode.useItemOn(player, InteractionHand.MAIN_HAND, hitResult);
+                stage = Stage.OFFLOAD_BOOTS;
+                return false;
+            }
+
+            case OFFLOAD_BOOTS: {
+                if (player.containerMenu == player.inventoryMenu) {
+                    return false; // Wait until chest UI opens
+                }
+
+                var containerMenu = player.containerMenu;
+                int containerId = containerMenu.containerId;
+
+                int playerSlotsStart = containerMenu.slots.size() - 36;
+                int offloadedCount = 0;
+
+                for (int containerSlot = playerSlotsStart; containerSlot < containerMenu.slots.size(); containerSlot++) {
+                    ItemStack stack = containerMenu.getSlot(containerSlot).getItem();
+                    
+                    if (!stack.isEmpty() && stack.is(net.minecraft.world.item.Items.GOLDEN_BOOTS)) {
+                        gameMode.handleContainerInput(containerId, containerSlot, 0, ContainerInput.QUICK_MOVE, player);
+                        offloadedCount++;
+                    }
+                }
+
+                player.sendSystemMessage(Component.literal(
+                        "Offloaded " + offloadedCount + " golden boot stack(s) into chest."));
+
+                closeContainerIfOpen(player);
+                stage = Stage.CLOSE_CHEST;
+                return true;
+            }
+
+            case CLOSE_CHEST:
+                return true;
+        }
+
+        return true;
+    }
+
+    private void closeContainerIfOpen(LocalPlayer player) {
+        if (player.containerMenu != player.inventoryMenu) {
+            player.closeContainer();
+        }
+    }
+
+    @Override
+    void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
+        closeContainerIfOpen(player);
+        super.end(player, level, options);
+    }
+
+    @Override
+    String describe() {
+        return "offload all golden boots into chest";
+    }
+}
 
 private class DelayAction extends BuildAction {
     private final int targetTicks;
@@ -2989,18 +3089,31 @@ private class PlaceFlowerPotAction extends BuildAction {
         }
 
         private int findBestTool(LocalPlayer player, Level level, BlockPos pos) {
-            net.minecraft.world.level.block.state.BlockState state = level.getBlockState(pos);
-            for (int i = 0; i < 9; i++) {
-                ItemStack stack = player.getInventory().getItem(i);
-                if (!stack.isEmpty() && stack.isCorrectToolForDrops(state)) {
-                    return i;
-                }
+    net.minecraft.world.level.block.state.BlockState state = level.getBlockState(pos);
+
+    // 1. Special handling for Cobwebs: prioritize Shears in hotbar
+    if (state.is(net.minecraft.world.level.block.Blocks.COBWEB)) {
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (!stack.isEmpty() && stack.is(net.minecraft.world.item.Items.SHEARS)) {
+                return i;
             }
-            if (!state.requiresCorrectToolForDrops()) {
-                return findSilkTouchSlot(player);
-            }
-            return -1;
         }
+    }
+
+    // 2. Normal tool selection for all other block types
+    for (int i = 0; i < 9; i++) {
+        ItemStack stack = player.getInventory().getItem(i);
+        if (!stack.isEmpty() && stack.isCorrectToolForDrops(state)) {
+            return i;
+        }
+    }
+    
+    if (!state.requiresCorrectToolForDrops()) {
+        return findSilkTouchSlot(player);
+    }
+    return -1;
+}
 
         @Override
         void end(LocalPlayer player, Level level, net.minecraft.client.Options options) {
