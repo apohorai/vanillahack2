@@ -260,7 +260,7 @@ public class PohaVanillaModClient implements ClientModInitializer {
         registeredSequences.add(new NamedSequence("plot", this::plotSequence));
         registeredSequences.add(new NamedSequence("refillfromchest", this::fillFromChestSequence));
         registeredSequences.add(new NamedSequence("shoot arrow", this::shootArrowSequence));
-        registeredSequences.add(new NamedSequence("Golden boots", this::shieldSequence));
+        registeredSequences.add(new NamedSequence("Golden boots", this::goldenBootSequence));
         // Add additional sequences here in the future:
         // registeredSequences.add(new NamedSequence("Bridge Builder", this::buildBridgeSequence));
     }
@@ -298,6 +298,38 @@ public class PohaVanillaModClient implements ClientModInitializer {
         steps.add(moveRight(1));
         return steps;
     }
+
+    private java.util.List<BuildAction> goldenBootSequence() {
+        java.util.List<BuildAction> steps = new java.util.ArrayList<>();
+        steps.add(centerAndAlign());
+        steps.add(lookForPlace());
+        steps.add(extractFromChest(6));
+        steps.add(moveLeft(1));
+        steps.add(centerAndAlign());
+        steps.add(lookForPlace());
+        steps.add(extractFromChest(7));
+        steps.add(moveLeft(1));
+        steps.add(centerAndAlign());
+        steps.add(lookForPlace());
+        steps.add(craftGoldenBoots(18));
+        steps.add(moveLeft(1));
+        steps.add(centerAndAlign());
+        steps.add(lookForPlace());
+        steps.add(offloadWoodenShovels());
+        steps.add(centerAndAlign());
+        steps.add(moveRight(1));
+        steps.add(moveRight(1));
+        steps.add(moveRight(1));
+        steps.add(moveRight(1));
+        return steps;
+    }
+
+
+
+
+
+
+
     private java.util.List<BuildAction> swordSequence() {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
         steps.add(centerAndAlign());
@@ -368,16 +400,19 @@ public class PohaVanillaModClient implements ClientModInitializer {
     }
     private java.util.List<BuildAction> dropSequence64Multiple() {
         java.util.List<BuildAction> steps = new java.util.ArrayList<>();
+        steps.add(refillHotbarSlot(3));
+        steps.add(refillHotbarSlot(4));
         steps.add(refillHotbarSlot(5));
         steps.add(refillHotbarSlot(6));
         steps.add(refillHotbarSlot(7));
         steps.add(refillHotbarSlot(8));
  //       steps.add(refillHotbarSlot(9));
-        
-        steps.add(dropHotbar(5, 50));
-        steps.add(dropHotbar(6, 50));
-        steps.add(dropHotbar(7, 50));
-        steps.add(dropHotbar(8, 50));
+        steps.add(dropHotbar(3, 60));
+        steps.add(dropHotbar(4, 60));
+        steps.add(dropHotbar(5, 60));
+        steps.add(dropHotbar(6, 60));
+        steps.add(dropHotbar(7, 60));
+        steps.add(dropHotbar(8, 60));
  //       steps.add(eat(9));
         steps.add(openCloseInventory());
         steps.add(delaySeconds(3));
