@@ -3091,6 +3091,12 @@ private class PlaceFlowerPotAction extends BuildAction {
         private int findBestTool(LocalPlayer player, Level level, BlockPos pos) {
     net.minecraft.world.level.block.state.BlockState state = level.getBlockState(pos);
 
+    // 1. Special handling for Glowstone: force swap to hotbar slot 2 (index 1)
+    if (state.is(net.minecraft.world.level.block.Blocks.GLOWSTONE)) {
+        return 1; // Slot 2 (1-based index 2 -> 0-based index 1)
+    }
+
+
     // 1. Special handling for Cobwebs: prioritize Shears in hotbar
     if (state.is(net.minecraft.world.level.block.Blocks.COBWEB)) {
         for (int i = 0; i < 9; i++) {
